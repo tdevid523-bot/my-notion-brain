@@ -1,0 +1,7 @@
+fastmcp
+uvicorn
+notion-client
+python-dotenv
+chromadb
+starlette
+pydantic
