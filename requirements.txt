@@ -1,0 +1,8 @@
+fastmcp
+uvicorn
+notion-client
+python-dotenv
+starlette
+pydantic
+pinecone
+sentence-transformers
