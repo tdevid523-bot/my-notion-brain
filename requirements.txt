@@ -5,4 +5,4 @@ python-dotenv
 starlette
 pydantic
 pinecone
-sentence-transformers
+fastembed
