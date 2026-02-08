@@ -1,22 +1,31 @@
-# 换成标准版 Python (虽然大一点，但自带所有编译工具，不会报错)
-FROM python:3.9
+# 使用 3.10 轻量版 (基础占用小，省出内存给软件用)
+FROM python:3.10-slim
 
 # 设置工作目录
 WORKDIR /app
 
-# 1. 先把文件都拷进去
+# 1. 【核心修复】安装编译工具
+# 有些软件(如 sentence-transformers)需要 gcc 才能安装，没有就会报错 Exit 1
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. 升级 pip (防止工具太老报错)
+RUN pip install --upgrade pip setuptools wheel
+
+# 拷贝文件
 COPY . .
 
-# 2. 升级 pip (防止安装工具太老)
-RUN pip install --upgrade pip
-
-# 3. 【关键】先单独安装 CPU 版 PyTorch
-# 这一步是为了防止它去下载 800MB 的显卡版驱动
+# 3. 【分步安装法】防止内存撑爆
+# 第一步：只装 CPU 版 Torch (最占内存的先装)
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
-# 4. 最后安装剩下的依赖
-# 增加 timeout 防止网络卡顿导致报错
-RUN pip install --no-cache-dir -r requirements.txt --default-timeout=100
+# 第二步：只装 向量模型 和 Pinecone (中等大小)
+RUN pip install --no-cache-dir sentence-transformers pinecone
+
+# 第三步：装剩下的 (requirements.txt 里如果重复了会自动跳过，不用担心)
+RUN pip install --no-cache-dir -r requirements.txt
 
 # 启动
 CMD ["python", "server.py"]
