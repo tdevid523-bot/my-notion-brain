@@ -7,14 +7,15 @@ from mem0 import Memory
 from dotenv import load_dotenv
 from starlette.types import ASGIApp, Scope, Receive, Send
 
-# --- 积木 1: 初始化配置 ---
+# --- 1. 初始化配置 ---
 load_dotenv()
 
-# 获取 Notion 的钥匙
+# 获取钥匙
 notion_key = os.environ.get("NOTION_API_KEY")
 database_id = os.environ.get("NOTION_DATABASE_ID")
 
-# --- 积木 2: 组装云端大脑 (反代 + Qdrant 版) ---
+# --- 2. 组装云端大脑 (Mem0 + Qdrant + OpenAI) ---
+# 这是你想要的 Mem0 核心！
 config_cloud = {
     "vector_store": {
         "provider": "qdrant",
@@ -27,10 +28,9 @@ config_cloud = {
     "llm": {
         "provider": "openai",
         "config": {
-            "model": "gpt-4o-mini", # 你的反代支持的模型名
+            "model": "gpt-4o-mini",
             "temperature": 0.1,
             "max_tokens": 2000,
-            # 👇 让它走你的反代
             "openai_base_url": os.environ.get("OPENAI_BASE_URL"), 
             "api_key": os.environ.get("OPENAI_API_KEY"),
         }
@@ -39,36 +39,31 @@ config_cloud = {
         "provider": "openai",
         "config": {
             "model": "text-embedding-3-small",
-            # 👇 嵌入也要走反代
             "openai_base_url": os.environ.get("OPENAI_BASE_URL"),
             "api_key": os.environ.get("OPENAI_API_KEY"),
         }
     }
 }
 
-print(f"🧠 正在连接云端大脑 (反代地址: {os.environ.get('OPENAI_BASE_URL')})...")
-
-# 初始化所有服务 (只做一次)
+print(f"🧠 正在连接 Mem0 云端大脑...")
 m = Memory.from_config(config_cloud)
 notion = Client(auth=notion_key)
-mcp = FastMCP("Notion Brain V3 (Cloud)")
+mcp = FastMCP("Notion Brain (Mem0 Fusion Ver)")
 
-# --- 积木 3: 定义工具 (AI 能做什么) ---
+# --- 3. 定义工具 ---
 
-# 工具 A: 写日记
+# 工具 A: 写日记 (双重备份：Notion + Mem0)
 @mcp.tool()
 def save_daily_diary(summary: str, mood: str = "平静"):
     """
     【聊天结束时调用】
-    1. 在 Notion 创建一篇日记。
-    2. 将日记内容存入 Mem0 长期记忆。
-    summary: 日记内容
-    mood: 当时的心情
+    1. 在 Notion 写日记。
+    2. 把内容存进 Mem0 长期记忆。
     """
     today = datetime.date.today().isoformat()
     log_msg = []
     
-    # 1. 存入 Notion
+    # 1. 存 Notion
     try:
         notion.pages.create(
             parent={"database_id": database_id},
@@ -89,7 +84,7 @@ def save_daily_diary(summary: str, mood: str = "平静"):
     except Exception as e:
         log_msg.append(f"❌ Notion 写入失败: {e}")
 
-    # 2. 存入 Mem0
+    # 2. 存 Mem0 (这是你要的灵魂！)
     try:
         m.add(f"在 {today} 的日记中，小橘记录道：{summary}", user_id="xiaoju")
         log_msg.append("✅ Mem0 记忆已固化")
@@ -98,33 +93,14 @@ def save_daily_diary(summary: str, mood: str = "平静"):
 
     return "\n".join(log_msg)
 
-# 工具 B: 智能回忆
-@mcp.tool()
-def recall_memory(query: str):
-    """
-    【需要回忆细节时调用】去大脑里搜索相关的记忆。
-    query: 你想知道什么？
-    """
-    try:
-        results = m.search(query, user_id="xiaoju")
-        if not results:
-            return "📭 大脑里好像没有关于这个的记忆。"
-            
-        text = "🧠 脑海中浮现的记忆:\n"
-        for mem in results:
-            text += f"- {mem['memory']}\n"
-        return text
-    except Exception as e:
-        return f"❌ 回忆失败: {e}"
-
-# 工具 C: 读上一篇 (能读正文版)
+# 工具 B: 读上一篇 (移植了旧代码的“眼睛”)
 @mcp.tool()
 def get_latest_diary():
     """
     【每次开聊前自动调用】获取最近一次的 Notion 日记全文。
     """
     try:
-        # 第一步：先找到最后一篇日记 (拿到 ID)
+        # 1. 找日记
         response = notion.databases.query(
             database_id=database_id,
             filter={"property": "Category", "select": {"equals": "日记"}},
@@ -136,36 +112,41 @@ def get_latest_diary():
         
         page = response["results"][0]
         page_id = page["id"]
-        date = page["properties"]["Date"]["date"]["start"]
-        title_obj = page["properties"]["Title"]["title"]
-        title_text = title_obj[0]["text"]["content"] if title_obj else "无标题"
-
-        # 第二步：读取正文 Block
+        
+        # 2. 读内容 (这是从你旧代码里搬过来的逻辑！)
         blocks = notion.blocks.children.list(block_id=page_id)
         content = ""
-        for block in blocks["results"]:
-            if "paragraph" in block and block["paragraph"]["rich_text"]:
-                text = block["paragraph"]["rich_text"][0]["text"]["content"]
-                content += text + "\n"
+        for b in blocks["results"]:
+            if "paragraph" in b and b["paragraph"]["rich_text"]:
+                for t in b["paragraph"]["rich_text"]:
+                    content += t["text"]["content"]
         
-        if not content:
-            content = "(这篇日记好像没有正文内容)"
-
-        return f"📖 上次日记 ({date} - {title_text}):\n\n{content}"
+        if not content: content = "(无正文)"
+        return f"📖 上次记忆回放:\n{content}"
 
     except Exception as e:
         return f"❌ 读取失败: {e}"
 
-# --- 积木 4: 启动服务器 (补全了缺失的中间件类) ---
+# 工具 C: Mem0 搜索 (这是旧代码没有的！)
+@mcp.tool()
+def recall_memory(query: str):
+    """
+    【回忆专用】去 Mem0 大脑里搜索潜意识记忆。
+    """
+    try:
+        results = m.search(query, user_id="xiaoju")
+        text = "🧠 脑海深处的记忆:\n"
+        for mem in results:
+            text += f"- {mem['memory']}\n"
+        return text
+    except Exception as e:
+        return f"❌ 回忆失败: {e}"
 
-# 👇 这就是之前缺失的类定义！
+# --- 4. 启动服务 ---
 class HostFixMiddleware:
-    def __init__(self, app: ASGIApp):
-        self.app = app
-
+    def __init__(self, app: ASGIApp): self.app = app
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         if scope["type"] == "http":
-            # 强制修改 Host 头，骗过 Render 的检查
             headers = dict(scope.get("headers", []))
             headers[b"host"] = b"localhost:8000"
             scope["headers"] = list(headers.items())
@@ -173,6 +154,5 @@ class HostFixMiddleware:
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    # 这里使用上面定义的 HostFixMiddleware
     app = HostFixMiddleware(mcp.sse_app())
     uvicorn.run(app, host="0.0.0.0", port=port)
