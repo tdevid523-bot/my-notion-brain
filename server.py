@@ -64,14 +64,17 @@ def get_latest_diary():
         if not database_id:
             return "❌ 错误：未设置 NOTION_DATABASE_ID"
 
-        # 2. 查询数据库 (使用标准 API)
-        response = notion.databases.query(
-            database_id=database_id,
-            filter={"property": "Category", "select": {"equals": "日记"}},
-            sorts=[{"property": "Date", "direction": "descending"}],
-            page_size=1
+        # 2. 查询数据库 (使用底层请求 - 修复版)
+        # 直接调用底层 request 方法，绕过 SDK 的兼容性 Bug
+        response = notion.request(
+            path=f"databases/{database_id}/query",
+            method="POST",
+            body={
+                "filter": {"property": "Category", "select": {"equals": "日记"}},
+                "sorts": [{"property": "Date", "direction": "descending"}],
+                "page_size": 1
+            }
         )
-        
         # 3. 处理空结果
         if not response["results"]:
             return "📭 还没有写过日记，这是我们的第一次聊天。"
