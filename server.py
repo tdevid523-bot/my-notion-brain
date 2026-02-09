@@ -5,7 +5,6 @@ from mcp.server.fastmcp import FastMCP
 from notion_client import Client
 from pinecone import Pinecone
 from fastembed import TextEmbedding
-from starlette.types import ASGIApp, Scope, Receive, Send
 
 # 1. 获取配置
 notion_key = os.environ.get("NOTION_API_KEY")
@@ -14,44 +13,39 @@ pinecone_key = os.environ.get("PINECONE_API_KEY")
 
 # 2. 初始化
 print("⏳ 正在初始化 V2 进化版服务...")
+
+# 容错处理：确保 Key 存在，否则打印警告
+if not notion_key:
+    print("❌ 严重错误: 缺少 NOTION_API_KEY！")
+else:
+    print("✅ Notion Key 已检测到")
+
 notion = Client(auth=notion_key)
 
-# 容错处理：如果没有 Pinecone Key，就不崩，只打印警告
 if pinecone_key:
     pc = Pinecone(api_key=pinecone_key)
     index = pc.Index("notion-brain")
     model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+    print("✅ Pinecone 搜索已就绪")
 else:
-    print("⚠️ 警告: 没有检测到 PINECONE_API_KEY，搜索功能将不可用")
+    print("⚠️ 警告: 没有 PINECONE_API_KEY，搜索功能将不可用")
 
+# 定义 MCP 服务
 mcp = FastMCP("Notion Brain V2")
-
-# --- 🛠️ 中间件: 解决 421 Invalid Host Header ---
-class HostFixMiddleware:
-    """
-    Render 发来的请求 Host 是 'xxx.onrender.com'。
-    但 MCP/Starlette 默认可能只认 'localhost'。
-    这个中间件把 Host 头强行改为 'localhost'，欺骗程序让它接客。
-    """
-    def __init__(self, app: ASGIApp):
-        self.app = app
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send):
-        if scope["type"] == "http":
-            headers = dict(scope.get("headers", []))
-            # 强制伪装成 localhost:8000
-            headers[b"host"] = b"localhost:8000"
-            scope["headers"] = list(headers.items())
-        await self.app(scope, receive, send)
 
 # --- 🛠️ 工具 1: 写日记 ---
 @mcp.tool()
 def save_daily_diary(summary: str, mood: str = "平静"):
     """
     【聊天结束时调用】记录聊天总结和心情。
+    summary: 聊天内容的总结
+    mood: 当时的心情
     """
     today = datetime.date.today().isoformat()
     try:
+        if not database_id:
+            return "❌ 错误: 没配置 Notion Database ID"
+
         notion.pages.create(
             parent={"database_id": database_id},
             properties={
@@ -69,15 +63,18 @@ def save_daily_diary(summary: str, mood: str = "平静"):
         )
         return "✅ 日记已写好！"
     except Exception as e:
-        return f"❌ 写日记失败: {e}"
+        return f"❌ 写日记失败: {str(e)}"
 
 # --- 🛠️ 工具 2: 读最近记忆 ---
 @mcp.tool()
 def get_latest_diary():
     """
-    【开聊前调用】获取最近一次的日记。
+    【开聊前调用】获取最近一次的日记，如果没有则返回空。
     """
     try:
+        if not database_id:
+            return "❌ 错误: 没配置 Notion Database ID"
+
         response = notion.databases.query(
             database_id=database_id,
             filter={"property": "Category", "select": {"equals": "日记"}},
@@ -88,6 +85,7 @@ def get_latest_diary():
             return "📭 还没有写过日记。"
         
         page = response["results"][0]
+        # 读取 Block 内容
         blocks = notion.blocks.children.list(block_id=page["id"])
         content = ""
         for b in blocks["results"]:
@@ -96,7 +94,7 @@ def get_latest_diary():
                     content += t["text"]["content"]
         return f"📖 上次记忆回放:\n{content}"
     except Exception as e:
-        return f"❌ 回忆失败: {e}"
+        return f"❌ 回忆失败: {str(e)}"
 
 # --- 🛠️ 工具 3: 搜索 ---
 @mcp.tool()
@@ -111,12 +109,20 @@ def search_memory_semantic(query: str):
         return ans
     except Exception as e: return f"❌ 搜索失败: {e}"
 
+# --- 🚀 启动部分 (关键修改) ---
 if __name__ == "__main__":
+    # 获取 Render 提供的端口，默认 7860
     port = int(os.environ.get("PORT", 7860))
-    print(f"🚀 服务启动中，端口: {port}")
+    print(f"🚀 服务启动中，监听端口: {port}")
     
-    # 关键修改：套上中间件
-    app = HostFixMiddleware(mcp.sse_app())
-    
-    # 关键修改：proxy_headers=True 让它信任 Render
-    uvicorn.run(app, host="0.0.0.0", port=port, proxy_headers=True)
+    # 【核心修复】：
+    # 1. host="0.0.0.0": 允许外部访问
+    # 2. proxy_headers=True: 告诉 Uvicorn 它是跑在代理后面的
+    # 3. forwarded_allow_ips="*": 【最重要】信任 Render 的 IP，解决 421 错误
+    uvicorn.run(
+        mcp.sse_app(), 
+        host="0.0.0.0", 
+        port=port, 
+        proxy_headers=True,
+        forwarded_allow_ips="*" 
+    )
