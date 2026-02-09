@@ -55,7 +55,7 @@ def save_daily_diary(summary: str, mood: str = "平静"):
     except Exception as e:
         return f"❌ 写日记失败: {e}"
 
-# --- 🛠️ 新增工具 2: 读最近记忆 (上下文注入) ---
+# --- 🛠️ 新增工具 2: 读最近记忆 (修复版) ---
 @mcp.tool()
 def get_latest_diary():
     """
@@ -67,29 +67,25 @@ def get_latest_diary():
         if not database_id:
             return "❌ 错误：未设置 NOTION_DATABASE_ID"
 
-        # 2. 查询数据库 (使用官方 SDK 标准写法，更稳定)
-        # 注意：这里假设你的数据库里有 'Category' 和 'Date' 这两列
-        # 如果报错 400，请检查 Notion 里这两列的名字是否完全一致
-        try:
-            response = notion.databases.query(
-                database_id=database_id,
-                filter={
-                    "property": "Category",  # ⚠️ 确保你的Notion列名也是 'Category'
-                    "select": {
-                        "equals": "日记"
-                    }
-                },
-                sorts=[
-                    {
-                        "property": "Date",  # ⚠️ 确保你的Notion列名也是 'Date'
-                        "direction": "descending"
-                    }
-                ],
-                page_size=1
-            )
-        except Exception as api_error:
-            # 捕获 API 报错并返回详细信息
-            return f"❌ Notion API 拒绝请求: {api_error}\n请检查：1.列名是否叫Category和Date？ 2.Category必须是单选列。"
+        # 2. 查询数据库
+        # 🔴 关键修改：改用 timestamp='created_time' 排序
+        # 这样就不需要你的表格里必须有名叫 'Date' 的列了，绝对稳！
+        response = notion.databases.query(
+            database_id=database_id,
+            filter={
+                "property": "Category", # ⚠️ 请确保你的Notion里有一列叫 'Category'
+                "select": {
+                    "equals": "日记"     # ⚠️ 并且这列里的选项包含 '日记'
+                }
+            },
+            sorts=[
+                {
+                    "timestamp": "created_time", # 使用系统创建时间，永远存在
+                    "direction": "descending"
+                }
+            ],
+            page_size=1
+        )
 
         # 3. 处理空结果
         if not response["results"]:
@@ -103,20 +99,23 @@ def get_latest_diary():
         blocks = notion.blocks.children.list(block_id=page_id)
         content = ""
         for b in blocks["results"]:
-            # 兼容段落(paragraph)和项目符号(bulleted_list_item)等
+            # 提取段落文本
             if "paragraph" in b and b["paragraph"]["rich_text"]:
                 for t in b["paragraph"]["rich_text"]:
                     content += t["text"]["content"]
                 content += "\n"
+            # 提取无序列表文本 (以防你用了列表)
             elif "bulleted_list_item" in b and b["bulleted_list_item"]["rich_text"]:
-                 for t in b["bulleted_list_item"]["rich_text"]:
-                    content += "- " + t["text"]["content"]
-                 content += "\n"
+                for t in b["bulleted_list_item"]["rich_text"]:
+                    content += "• " + t["text"]["content"]
+                content += "\n"
                     
         return f"📖 上次记忆回放:\n{content}"
 
     except Exception as e:
-        return f"❌ 系统运行出错: {str(e)}"
+        # 打印详细错误，方便排查
+        print(f"❌ 读取失败详细报错: {e}")
+        return f"❌ 读取记忆失败: {str(e)}\n(请检查Notion表格里是否有名为'Category'的单选列)"
 
 # --- 🛠️ 新增工具 3: 自由写作 (知识库/笔记) ---
 # ⚠️ 注意：这个函数必须顶格写，不能有缩进！
