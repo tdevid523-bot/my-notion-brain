@@ -90,9 +90,9 @@ def get_latest_diary():
                     
         return f"📖 上次记忆回放:\n{content}"
         
-    except AttributeError:
-        # 🚑 紧急修复：如果报 'no attribute query'，说明可能安装了错误的 notion 库
-        return "❌ 库冲突错误：请在 requirements.txt 确认安装的是 'notion-client' 而不是 'notion'。"
+    except Exception as e:
+        # 捕获所有错误并显示真实原因，方便调试
+        return f"❌ 运行出错 (Error: {type(e).__name__}): {str(e)}"
     except Exception as e:
         return f"❌ 回忆失败: {str(e)}"
 
