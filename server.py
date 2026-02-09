@@ -63,21 +63,34 @@ def get_latest_diary():
     获取最近一次的日记，用来回忆上次聊了什么，防止聊天断片。
     """
     try:
-        # 1. 安全检查：确保数据库 ID 存在
+        # 1. 安全检查
         if not database_id:
             return "❌ 错误：未设置 NOTION_DATABASE_ID"
 
-        # 2. 查询数据库 (使用底层请求 - 修复版)
-        # 直接调用底层 request 方法，绕过 SDK 的兼容性 Bug
-        response = notion.request(
-            path=f"databases/{database_id}/query",
-            method="POST",
-            body={
-                "filter": {"property": "Category", "select": {"equals": "日记"}},
-                "sorts": [{"property": "Date", "direction": "descending"}],
-                "page_size": 1
-            }
-        )
+        # 2. 查询数据库 (使用官方 SDK 标准写法，更稳定)
+        # 注意：这里假设你的数据库里有 'Category' 和 'Date' 这两列
+        # 如果报错 400，请检查 Notion 里这两列的名字是否完全一致
+        try:
+            response = notion.databases.query(
+                database_id=database_id,
+                filter={
+                    "property": "Category",  # ⚠️ 确保你的Notion列名也是 'Category'
+                    "select": {
+                        "equals": "日记"
+                    }
+                },
+                sorts=[
+                    {
+                        "property": "Date",  # ⚠️ 确保你的Notion列名也是 'Date'
+                        "direction": "descending"
+                    }
+                ],
+                page_size=1
+            )
+        except Exception as api_error:
+            # 捕获 API 报错并返回详细信息
+            return f"❌ Notion API 拒绝请求: {api_error}\n请检查：1.列名是否叫Category和Date？ 2.Category必须是单选列。"
+
         # 3. 处理空结果
         if not response["results"]:
             return "📭 还没有写过日记，这是我们的第一次聊天。"
@@ -90,17 +103,20 @@ def get_latest_diary():
         blocks = notion.blocks.children.list(block_id=page_id)
         content = ""
         for b in blocks["results"]:
+            # 兼容段落(paragraph)和项目符号(bulleted_list_item)等
             if "paragraph" in b and b["paragraph"]["rich_text"]:
                 for t in b["paragraph"]["rich_text"]:
-                    content += t["text"]["content"] + "\n"
+                    content += t["text"]["content"]
+                content += "\n"
+            elif "bulleted_list_item" in b and b["bulleted_list_item"]["rich_text"]:
+                 for t in b["bulleted_list_item"]["rich_text"]:
+                    content += "- " + t["text"]["content"]
+                 content += "\n"
                     
         return f"📖 上次记忆回放:\n{content}"
-        
+
     except Exception as e:
-        # 捕获所有错误并显示真实原因，方便调试
-        return f"❌ 运行出错 (Error: {type(e).__name__}): {str(e)}"
-    except Exception as e:
-        return f"❌ 回忆失败: {str(e)}"
+        return f"❌ 系统运行出错: {str(e)}"
 
 # --- 🛠️ 新增工具 3: 自由写作 (知识库/笔记) ---
 # ⚠️ 注意：这个函数必须顶格写，不能有缩进！
