@@ -7,21 +7,14 @@ from mem0 import Memory
 from dotenv import load_dotenv
 from starlette.types import ASGIApp, Scope, Receive, Send
 
-os.environ["NO_PROXY"] = "localhost,127.0.0.1"
-os.environ["no_proxy"] = "localhost,127.0.0.1"
 # --- 积木 1: 初始化配置 ---
-# 加载 .env 文件里的密码
 load_dotenv()
 
 # 获取 Notion 的钥匙
 notion_key = os.environ.get("NOTION_API_KEY")
 database_id = os.environ.get("NOTION_DATABASE_ID")
 
-# --- 积木 2: 组装大脑 (Mem0 + Ollama) ---
-# 这里告诉 Mem0："不要用 OpenAI，用我电脑上的 Ollama"
 # --- 积木 2: 组装云端大脑 (反代 + Qdrant 版) ---
-# ⚠️ 绝对不要再出现 "ollama" 这个词！
-
 config_cloud = {
     "vector_store": {
         "provider": "qdrant",
@@ -46,36 +39,36 @@ config_cloud = {
         "provider": "openai",
         "config": {
             "model": "text-embedding-3-small",
-            # 👇 嵌入也要走反代 (如果你的反代不支持嵌入，这里会报错，到时候再改)
+            # 👇 嵌入也要走反代
             "openai_base_url": os.environ.get("OPENAI_BASE_URL"),
             "api_key": os.environ.get("OPENAI_API_KEY"),
         }
     }
 }
 
-print(f"🧠 正在连接云端大脑 (反代)...")
-# 👇 注意这里！一定要用 config_cloud，不要用 config_ollama！
-m = Memory.from_config(config_cloud)
-notion = Client(auth=notion_key)       # 日记本
-mcp = FastMCP("Notion Brain V3 (Local)")
+print(f"🧠 正在连接云端大脑 (反代地址: {os.environ.get('OPENAI_BASE_URL')})...")
 
+# 初始化所有服务 (只做一次)
+m = Memory.from_config(config_cloud)
+notion = Client(auth=notion_key)
+mcp = FastMCP("Notion Brain V3 (Cloud)")
 
 # --- 积木 3: 定义工具 (AI 能做什么) ---
 
-# 工具 A: 写日记 (双重备份)
+# 工具 A: 写日记
 @mcp.tool()
 def save_daily_diary(summary: str, mood: str = "平静"):
     """
     【聊天结束时调用】
-    1. 在 Notion 创建一篇日记（给主人看）。
-    2. 将日记内容存入 Mem0 长期记忆（给 AI 记）。
+    1. 在 Notion 创建一篇日记。
+    2. 将日记内容存入 Mem0 长期记忆。
     summary: 日记内容
     mood: 当时的心情
     """
     today = datetime.date.today().isoformat()
     log_msg = []
     
-    # 1. 存入 Notion (看得见的日记)
+    # 1. 存入 Notion
     try:
         notion.pages.create(
             parent={"database_id": database_id},
@@ -96,9 +89,8 @@ def save_daily_diary(summary: str, mood: str = "平静"):
     except Exception as e:
         log_msg.append(f"❌ Notion 写入失败: {e}")
 
-    # 2. 存入 Mem0 (看不见的潜意识)
+    # 2. 存入 Mem0
     try:
-        # Mem0 会自动提取事实，比如 "User likes coding"
         m.add(f"在 {today} 的日记中，小橘记录道：{summary}", user_id="xiaoju")
         log_msg.append("✅ Mem0 记忆已固化")
     except Exception as e:
@@ -106,13 +98,12 @@ def save_daily_diary(summary: str, mood: str = "平静"):
 
     return "\n".join(log_msg)
 
-# 工具 B: 智能回忆 (脑海搜索)
+# 工具 B: 智能回忆
 @mcp.tool()
 def recall_memory(query: str):
     """
-    【需要回忆细节时调用】
-    去大脑里搜索相关的记忆。
-    query: 你想知道什么？(例如 "小橘上次提到的项目痛点是什么？")
+    【需要回忆细节时调用】去大脑里搜索相关的记忆。
+    query: 你想知道什么？
     """
     try:
         results = m.search(query, user_id="xiaoju")
@@ -126,8 +117,7 @@ def recall_memory(query: str):
     except Exception as e:
         return f"❌ 回忆失败: {e}"
 
-# 工具 C: 读上一篇 (上下文)
-# --- 工具 C: 读上一篇 (升级版：能读正文) ---
+# 工具 C: 读上一篇 (能读正文版)
 @mcp.tool()
 def get_latest_diary():
     """
@@ -150,13 +140,10 @@ def get_latest_diary():
         title_obj = page["properties"]["Title"]["title"]
         title_text = title_obj[0]["text"]["content"] if title_obj else "无标题"
 
-        # 第二步：【关键】根据 ID 去读取页面里的“积木” (Blocks)
-        # 这就是为什么之前只能看到题目，因为少了这个步骤
+        # 第二步：读取正文 Block
         blocks = notion.blocks.children.list(block_id=page_id)
-        
         content = ""
         for block in blocks["results"]:
-            # 检查这个积木是不是一段话 (paragraph)
             if "paragraph" in block and block["paragraph"]["rich_text"]:
                 text = block["paragraph"]["rich_text"][0]["text"]["content"]
                 content += text + "\n"
@@ -169,47 +156,23 @@ def get_latest_diary():
     except Exception as e:
         return f"❌ 读取失败: {e}"
 
-# --- 积木 4: 启动服务器 (固定写法) ---
-# --- 积木 2: 组装云端大脑 (适配 Render) ---
-# 我们改用 OpenAI + Qdrant Cloud，这样在 Render 上也能跑！
-# --- 积木 2: 组装云端大脑 (反代专用版) ---
-config_cloud = {
-    "vector_store": {
-        "provider": "qdrant",
-        "config": {
-            "collection_name": "xiaoju_memory",
-            "url": os.environ.get("QDRANT_URL"),
-            "api_key": os.environ.get("QDRANT_API_KEY"),
-        }
-    },
-    "llm": {
-        "provider": "openai",
-        "config": {
-            "model": "gpt-4o-mini",  # 你的反代支持的模型名字
-            "temperature": 0.1,
-            "max_tokens": 2000,
-            # 👇 关键：增加这一行，让它读你的反代地址
-            "openai_base_url": os.environ.get("OPENAI_BASE_URL"), 
-            "api_key": os.environ.get("OPENAI_API_KEY"),
-        }
-    },
-    "embedder": {
-        "provider": "openai",
-        "config": {
-            "model": "text-embedding-3-small",
-            # 👇 嵌入模型也要走反代 (如果你的反代支持的话)
-            "openai_base_url": os.environ.get("OPENAI_BASE_URL"),
-            "api_key": os.environ.get("OPENAI_API_KEY"),
-        }
-    }
-}
+# --- 积木 4: 启动服务器 (补全了缺失的中间件类) ---
 
-print(f"🧠 正在连接云端大脑 (反代地址: {os.environ.get('OPENAI_BASE_URL')})...")
-m = Memory.from_config(config_cloud)
+# 👇 这就是之前缺失的类定义！
+class HostFixMiddleware:
+    def __init__(self, app: ASGIApp):
+        self.app = app
 
-notion = Client(auth=notion_key)       
-mcp = FastMCP("Notion Brain V3 (Cloud)")
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] == "http":
+            # 强制修改 Host 头，骗过 Render 的检查
+            headers = dict(scope.get("headers", []))
+            headers[b"host"] = b"localhost:8000"
+            scope["headers"] = list(headers.items())
+        await self.app(scope, receive, send)
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
+    # 这里使用上面定义的 HostFixMiddleware
     app = HostFixMiddleware(mcp.sse_app())
     uvicorn.run(app, host="0.0.0.0", port=port)
