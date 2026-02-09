@@ -5,7 +5,6 @@ from mcp.server.fastmcp import FastMCP
 from notion_client import Client
 from pinecone import Pinecone
 from fastembed import TextEmbedding
-from starlette.types import ASGIApp, Scope, Receive, Send
 
 # 1. 获取配置
 notion_key = os.environ.get("NOTION_API_KEY")
@@ -14,6 +13,11 @@ pinecone_key = os.environ.get("PINECONE_API_KEY")
 
 # 2. 初始化
 print("⏳ 正在初始化 V2 进化版服务...")
+# 注意：如果环境变量没配对，这里会报错导致服务起不来
+# 建议在 Render 仪表盘检查 Environment Variables
+if not notion_key or not pinecone_key:
+    print("⚠️ 警告：检测到 API Key 缺失！服务可能无法正常工作。")
+
 notion = Client(auth=notion_key)
 pc = Pinecone(api_key=pinecone_key)
 index = pc.Index("notion-brain")
@@ -21,15 +25,12 @@ model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
 
 mcp = FastMCP("Notion Brain V2")
 
-# --- 🛠️ 新增工具 1: 写日记 (情感记忆) ---
+# --- 🛠️ 工具 1: 写日记 ---
 @mcp.tool()
 def save_daily_diary(summary: str, mood: str = "平静"):
     """
     【必须在聊天结束时调用】
     以第一人称('我')记录刚才和主人的聊天总结。
-    包含：聊了什么话题、主人的状态、我的感受。
-    summary: 日记内容 (例如: '今天小橘跟我抱怨了工作...')
-    mood: 当时的心情关键词
     """
     today = datetime.date.today().isoformat()
     try:
@@ -37,7 +38,7 @@ def save_daily_diary(summary: str, mood: str = "平静"):
             parent={"database_id": database_id},
             properties={
                 "Title": {"title": [{"text": {"content": f"📅 日记 {today} ({mood})"}}]},
-                "Category": {"select": {"name": "日记"}}, # 自动打上标签
+                "Category": {"select": {"name": "日记"}}, 
                 "Date": {"date": {"start": today}}
             },
             children=[{
@@ -52,15 +53,14 @@ def save_daily_diary(summary: str, mood: str = "平静"):
     except Exception as e:
         return f"❌ 写日记失败: {e}"
 
-# --- 🛠️ 新增工具 2: 读最近记忆 (上下文注入) ---
+# --- 🛠️ 工具 2: 读最近记忆 ---
 @mcp.tool()
 def get_latest_diary():
     """
     【每次开聊前自动调用】
-    获取最近一次的日记，用来回忆上次聊了什么，防止聊天断片。
+    获取最近一次的日记。
     """
     try:
-        # 搜索最近的一篇“日记”
         response = notion.databases.query(
             database_id=database_id,
             filter={"property": "Category", "select": {"equals": "日记"}},
@@ -71,50 +71,18 @@ def get_latest_diary():
             return "📭 还没有写过日记，这是我们的第一次聊天。"
         
         page = response["results"][0]
-        page_id = page["id"]
-        
-        # 获取内容
-        blocks = notion.blocks.children.list(block_id=page_id)
+        # 获取内容逻辑...
+        blocks = notion.blocks.children.list(block_id=page["id"])
         content = ""
         for b in blocks["results"]:
             if "paragraph" in b and b["paragraph"]["rich_text"]:
                 for t in b["paragraph"]["rich_text"]:
                     content += t["text"]["content"]
-                    
         return f"📖 上次记忆回放:\n{content}"
     except Exception as e:
         return f"❌ 回忆失败: {e}"
 
-# --- 原有工具: 同步索引 ---
-@mcp.tool()
-def sync_notion_index():
-    try:
-        print("⚡️ 开始同步...")
-        all_pages = notion.search(filter={"value": "page", "property": "object"})["results"]
-        vectors = []
-        target_id_clean = database_id.replace("-", "")
-        count = 0
-        
-        for p in all_pages:
-            pid = p.get("parent", {}).get("database_id", "")
-            if pid and pid.replace("-", "") == target_id_clean:
-                title = "无题"
-                if "Title" in p["properties"] and p["properties"]["Title"]["title"]:
-                    title = p["properties"]["Title"]["title"][0]["text"]["content"]
-                
-                # 简单提取内容 (如果是日记，就作为重点记忆)
-                txt = f"标题: {title}"
-                emb = list(model.embed([txt]))[0].tolist()
-                vectors.append((p["id"], emb, {"text": txt, "title": title}))
-                count += 1
-        
-        if vectors:
-            index.upsert(vectors=vectors)
-            return f"✅ 成功同步 {count} 条记忆！"
-        return "⚠️ 没找到内容"
-    except Exception as e: return f"❌ 同步失败: {e}"
-
-# --- 原有工具: 搜索 ---
+# --- 🛠️ 工具 3: 搜索 ---
 @mcp.tool()
 def search_memory_semantic(query: str):
     try:
@@ -126,17 +94,13 @@ def search_memory_semantic(query: str):
         return ans
     except Exception as e: return f"❌ 搜索失败: {e}"
 
-# --- 通行证中间件 (保持不变) ---
-class HostFixMiddleware:
-    def __init__(self, app: ASGIApp): self.app = app
-    async def __call__(self, scope: Scope, receive: Receive, send: Send):
-        if scope["type"] == "http":
-            headers = dict(scope.get("headers", []))
-            headers[b"host"] = b"localhost:8000"
-            scope["headers"] = list(headers.items())
-        await self.app(scope, receive, send)
-
+# --- 🚀 启动部分 (已修改) ---
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app = HostFixMiddleware(mcp.sse_app())
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # Render 会自动注入 PORT 环境变量，通常是 10000
+    # 我们这里默认设为 7860 以防万一
+    port = int(os.environ.get("PORT", 7860))
+    print(f"🚀 服务正在启动，监听端口: {port}")
+    
+    # ❌ 删除了 HostFixMiddleware
+    # 直接运行 mcp.sse_app()
+    uvicorn.run(mcp.sse_app(), host="0.0.0.0", port=port)
