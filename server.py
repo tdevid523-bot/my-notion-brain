@@ -84,6 +84,38 @@ def get_latest_diary():
         return f"📖 上次记忆回放:\n{content}"
     except Exception as e:
         return f"❌ 回忆失败: {e}"
+    
+   # --- 🛠️ 新增工具 3: 自由写作 (知识库/笔记) ---
+@mcp.tool()
+def save_note(title: str, content: str, tag: str = "灵感"):
+    """
+    【当用户让你写文档、做计划、记笔记时调用】
+    这不是日记，而是有特定主题的知识或笔记。
+    title: 笔记的标题 (例如: 'Python学习路线图', '周五会议记录')
+    content: 笔记的详细内容 (支持 Markdown 格式)
+    tag: 标签，默认为'灵感'，也可以是'学习'、'工作'等 (必须在 Notion 数据库里有这个选项)
+    """
+    today = datetime.date.today().isoformat()
+    try:
+        notion.pages.create(
+            parent={"database_id": database_id},
+            properties={
+                "Title": {"title": [{"text": {"content": title}}]},
+                # 注意：如果你的 Notion 里没有这个标签选项，可能会报错，建议在 Notion 里先加好
+                "Category": {"select": {"name": tag}}, 
+                "Date": {"date": {"start": today}}
+            },
+            children=[{
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [{"type": "text", "text": {"content": content}}]
+                }
+            }]
+        )
+        return f"✅ 已创建笔记：《{title}》"
+    except Exception as e:
+        return f"❌ 写作失败: {e} (可能是标签 '{tag}' 在 Notion 里不存在)" 
 
 # --- 原有工具: 同步索引 ---
 @mcp.tool()
