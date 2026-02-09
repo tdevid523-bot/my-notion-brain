@@ -8,10 +8,13 @@ from fastembed import TextEmbedding
 from starlette.types import ASGIApp, Scope, Receive, Send
 
 # 1. 获取配置 (自动去除可能误复制的空格或换行符)
+# 1. 获取配置 (自动去除可能误复制的换行符或空格，这非常重要！)
 notion_key = os.environ.get("NOTION_API_KEY", "").strip()
 database_id = os.environ.get("NOTION_DATABASE_ID", "").strip()
 pinecone_key = os.environ.get("PINECONE_API_KEY", "").strip()
 
+# 🔍 调试打印：确认 ID 是否干净 (部署后可在日志看到)
+print(f"🔍 调试: Database ID 长度={len(database_id)}, 最后一位='{database_id[-1] if database_id else '空'}'")
 # 2. 初始化
 print("⏳ 正在初始化 V2 进化版服务...")
 notion = Client(auth=notion_key)
