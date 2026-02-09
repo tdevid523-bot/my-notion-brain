@@ -13,7 +13,7 @@ database_id = os.environ.get("NOTION_DATABASE_ID")
 pinecone_key = os.environ.get("PINECONE_API_KEY")
 
 # 2. 初始化
-print("⏳ 正在初始化 V2 进化版服务...")
+print("⏳ 正在初始化 V3 最终版...")
 notion = Client(auth=notion_key)
 
 if pinecone_key:
@@ -21,12 +21,11 @@ if pinecone_key:
     index = pc.Index("notion-brain")
     model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
 else:
-    print("⚠️ 警告: 没有 PINECONE_API_KEY，搜索功能将不可用")
+    print("⚠️ 警告: 没有 PINECONE_API_KEY")
 
 mcp = FastMCP("Notion Brain V2")
 
-# --- 🛠️ 关键修复：强力伪装中间件 ---
-# 无论 Render 发来什么域名，我们都骗程序说是 "localhost"
+# --- 🛠️ 强力伪装中间件 (带日志版) ---
 class ForceLocalhostMiddleware:
     def __init__(self, app: ASGIApp):
         self.app = app
@@ -34,20 +33,22 @@ class ForceLocalhostMiddleware:
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         if scope["type"] == "http":
             headers = dict(scope.get("headers", []))
-            # 强制修改 Host 头，欺骗 FastMCP
+            
+            # 🛑 打印日志：证明新代码生效了
+            original_host = headers.get(b"host", b"unknown").decode()
+            # print(f"🔍 收到请求，原始 Host: {original_host}，正在伪装成 localhost...")
+            
+            # 强制修改 Host 头
             headers[b"host"] = b"localhost"
             scope["headers"] = list(headers.items())
+            
         await self.app(scope, receive, send)
 
-# --- 🛠️ 工具 1: 写日记 ---
+# --- 🛠️ 工具部分 ---
 @mcp.tool()
 def save_daily_diary(summary: str, mood: str = "平静"):
-    """
-    【聊天结束时调用】记录聊天总结和心情。
-    """
     today = datetime.date.today().isoformat()
     try:
-        if not database_id: return "❌ 错误: 没配 Database ID"
         notion.pages.create(
             parent={"database_id": database_id},
             properties={
@@ -55,47 +56,30 @@ def save_daily_diary(summary: str, mood: str = "平静"):
                 "Category": {"select": {"name": "日记"}}, 
                 "Date": {"date": {"start": today}}
             },
-            children=[{
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{"type": "text", "text": {"content": summary}}]
-                }
-            }]
+            children=[{"object":"block","type":"paragraph","paragraph":{"rich_text":[{"type":"text","text":{"content":summary}}]}}]
         )
         return "✅ 日记已写好！"
-    except Exception as e:
-        return f"❌ 写日记失败: {e}"
+    except Exception as e: return f"❌ 失败: {e}"
 
-# --- 🛠️ 工具 2: 读最近记忆 ---
 @mcp.tool()
 def get_latest_diary():
-    """
-    【开聊前调用】获取最近一次的日记。
-    """
     try:
-        if not database_id: return "❌ 错误: 没配 Database ID"
         response = notion.databases.query(
             database_id=database_id,
             filter={"property": "Category", "select": {"equals": "日记"}},
             sorts=[{"property": "Date", "direction": "descending"}],
             page_size=1
         )
-        if not response["results"]:
-            return "📭 还没有写过日记。"
-        
+        if not response["results"]: return "📭 无日记"
         page = response["results"][0]
         blocks = notion.blocks.children.list(block_id=page["id"])
         content = ""
         for b in blocks["results"]:
             if "paragraph" in b and b["paragraph"]["rich_text"]:
-                for t in b["paragraph"]["rich_text"]:
-                    content += t["text"]["content"]
-        return f"📖 上次记忆回放:\n{content}"
-    except Exception as e:
-        return f"❌ 回忆失败: {e}"
+                for t in b["paragraph"]["rich_text"]: content += t["text"]["content"]
+        return f"📖 记忆回放:\n{content}"
+    except Exception as e: return f"❌ 失败: {e}"
 
-# --- 🛠️ 工具 3: 搜索 ---
 @mcp.tool()
 def search_memory_semantic(query: str):
     if not pinecone_key: return "❌ Pinecone 未配置"
@@ -103,28 +87,16 @@ def search_memory_semantic(query: str):
         vec = list(model.embed([query]))[0].tolist()
         res = index.query(vector=vec, top_k=3, include_metadata=True)
         ans = "Found:\n"
-        for m in res["matches"]:
-            ans += f"- {m['metadata'].get('text','')} (相似度 {m['score']:.2f})\n"
+        for m in res["matches"]: ans += f"- {m['metadata'].get('text','')} ({m['score']:.2f})\n"
         return ans
-    except Exception as e: return f"❌ 搜索失败: {e}"
+    except Exception as e: return f"❌ 失败: {e}"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 7860))
-    print(f"🚀 最终版服务启动，端口: {port}")
+    print(f"🚀 V3 服务启动中，端口: {port}")
     
-    # 1. 拿到原始应用
-    app = mcp.sse_app()
+    # 这里的顺序极其重要！
+    app = mcp.sse_app() 
+    app = ForceLocalhostMiddleware(app) # 👈 必须套在这里
     
-    # 2. 套上伪装卡 (解决 421 错误)
-    app = ForceLocalhostMiddleware(app)
-    
-    # 3. 启动！
-    # forwarded_allow_ips="*" 是为了信任 Render 的代理 IP
-    # proxy_headers=True 是为了正确处理 HTTPS
-    uvicorn.run(
-        app, 
-        host="0.0.0.0", 
-        port=port, 
-        proxy_headers=True, 
-        forwarded_allow_ips="*"
-    )
+    uvicorn.run(app, host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")
