@@ -9,13 +9,10 @@ from starlette.types import ASGIApp, Scope, Receive, Send
 
 # --- 1. 初始化配置 ---
 load_dotenv()
-
-# 获取钥匙
 notion_key = os.environ.get("NOTION_API_KEY")
 database_id = os.environ.get("NOTION_DATABASE_ID")
 
-# --- 2. 组装云端大脑 (Mem0 + Qdrant + OpenAI) ---
-# 这是你想要的 Mem0 核心！
+# --- 2. 组装云端大脑 (Mem0 + Qdrant) ---
 config_cloud = {
     "vector_store": {
         "provider": "qdrant",
@@ -46,19 +43,23 @@ config_cloud = {
 }
 
 print(f"🧠 正在连接 Mem0 云端大脑...")
-m = Memory.from_config(config_cloud)
+try:
+    m = Memory.from_config(config_cloud)
+except Exception as e:
+    print(f"⚠️ Mem0 连接警告 (如果不影响启动可忽略): {e}")
+    m = None # 避免启动崩溃
+
 notion = Client(auth=notion_key)
-mcp = FastMCP("Notion Brain (Mem0 Fusion Ver)")
+mcp = FastMCP("Notion Brain (Fusion Ver)")
 
 # --- 3. 定义工具 ---
 
-# 工具 A: 写日记 (双重备份：Notion + Mem0)
 @mcp.tool()
 def save_daily_diary(summary: str, mood: str = "平静"):
     """
-    【聊天结束时调用】
-    1. 在 Notion 写日记。
-    2. 把内容存进 Mem0 长期记忆。
+    【写日记】同时存入 Notion 和 Mem0 记忆库。
+    summary: 日记内容
+    mood: 心情
     """
     today = datetime.date.today().isoformat()
     log_msg = []
@@ -82,25 +83,27 @@ def save_daily_diary(summary: str, mood: str = "平静"):
         )
         log_msg.append("✅ Notion 日记已生成")
     except Exception as e:
-        log_msg.append(f"❌ Notion 写入失败: {e}")
+        log_msg.append(f"❌ Notion 失败: {e}")
 
-    # 2. 存 Mem0 (这是你要的灵魂！)
-    try:
-        m.add(f"在 {today} 的日记中，小橘记录道：{summary}", user_id="xiaoju")
-        log_msg.append("✅ Mem0 记忆已固化")
-    except Exception as e:
-        log_msg.append(f"❌ Mem0 记忆失败: {e}")
+    # 2. 存 Mem0
+    if m:
+        try:
+            m.add(f"在 {today} 的日记中，小橘记录道：{summary}", user_id="xiaoju")
+            log_msg.append("✅ Mem0 记忆已固化")
+        except Exception as e:
+            log_msg.append(f"❌ Mem0 失败: {e}")
+    else:
+        log_msg.append("⚠️ Mem0 未连接，仅存了 Notion")
 
     return "\n".join(log_msg)
 
-# 工具 B: 读上一篇 (移植了旧代码的“眼睛”)
 @mcp.tool()
 def get_latest_diary():
     """
-    【每次开聊前自动调用】获取最近一次的 Notion 日记全文。
+    【读日记】读取上一篇日记的全文（含正文）。
     """
     try:
-        # 1. 找日记
+        # 1. 找最近一篇
         response = notion.databases.query(
             database_id=database_id,
             filter={"property": "Category", "select": {"equals": "日记"}},
@@ -113,36 +116,38 @@ def get_latest_diary():
         page = response["results"][0]
         page_id = page["id"]
         
-        # 2. 读内容 (这是从你旧代码里搬过来的逻辑！)
+        # 2. 读正文 (这里修复了之前只读标题的问题)
         blocks = notion.blocks.children.list(block_id=page_id)
         content = ""
         for b in blocks["results"]:
+            # 兼容各种文本块
             if "paragraph" in b and b["paragraph"]["rich_text"]:
                 for t in b["paragraph"]["rich_text"]:
                     content += t["text"]["content"]
+            # 如果是其他类型也尝试读取（可选）
         
-        if not content: content = "(无正文)"
+        if not content: content = "(无正文内容)"
         return f"📖 上次记忆回放:\n{content}"
 
     except Exception as e:
         return f"❌ 读取失败: {e}"
 
-# 工具 C: Mem0 搜索 (这是旧代码没有的！)
 @mcp.tool()
 def recall_memory(query: str):
     """
-    【回忆专用】去 Mem0 大脑里搜索潜意识记忆。
+    【搜索记忆】从 Mem0 搜索相关记忆。
     """
+    if not m: return "❌ Mem0 大脑未连接"
     try:
         results = m.search(query, user_id="xiaoju")
-        text = "🧠 脑海深处的记忆:\n"
+        text = "🧠 脑海浮现:\n"
         for mem in results:
             text += f"- {mem['memory']}\n"
         return text
     except Exception as e:
-        return f"❌ 回忆失败: {e}"
+        return f"❌ 搜索失败: {e}"
 
-# --- 4. 启动服务 ---
+# --- 4. 启动服务 (关键修复！) ---
 class HostFixMiddleware:
     def __init__(self, app: ASGIApp): self.app = app
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
