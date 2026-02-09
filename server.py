@@ -19,33 +19,43 @@ database_id = os.environ.get("NOTION_DATABASE_ID")
 
 # --- 积木 2: 组装大脑 (Mem0 + Ollama) ---
 # 这里告诉 Mem0："不要用 OpenAI，用我电脑上的 Ollama"
-config_ollama = {
-    "llm": {
-        "provider": "ollama",
+# --- 积木 2: 组装云端大脑 (反代 + Qdrant 版) ---
+# ⚠️ 绝对不要再出现 "ollama" 这个词！
+
+config_cloud = {
+    "vector_store": {
+        "provider": "qdrant",
         "config": {
-            "model": "qwen2.5",     # 刚才下载的聊天模型
-            "temperature": 0.1,     # 0.1 代表严谨，不胡编乱造
+            "collection_name": "xiaoju_memory",
+            "url": os.environ.get("QDRANT_URL"),
+            "api_key": os.environ.get("QDRANT_API_KEY"),
+        }
+    },
+    "llm": {
+        "provider": "openai",
+        "config": {
+            "model": "gpt-4o-mini", # 你的反代支持的模型名
+            "temperature": 0.1,
             "max_tokens": 2000,
+            # 👇 让它走你的反代
+            "openai_base_url": os.environ.get("OPENAI_BASE_URL"), 
+            "api_key": os.environ.get("OPENAI_API_KEY"),
         }
     },
     "embedder": {
-        "provider": "ollama",
+        "provider": "openai",
         "config": {
-            "model": "nomic-embed-text" # 刚才下载的嵌入模型
-        }
-    },
-    "vector_store": {
-        "provider": "qdrant",  # <--- 改成 qdrant
-        "config": {
-            "collection_name": "xiaoju_memory",
-            "path": "local_mem0_db",  # 指定一个文件夹，这样重启后记忆还在！
+            "model": "text-embedding-3-small",
+            # 👇 嵌入也要走反代 (如果你的反代不支持嵌入，这里会报错，到时候再改)
+            "openai_base_url": os.environ.get("OPENAI_BASE_URL"),
+            "api_key": os.environ.get("OPENAI_API_KEY"),
         }
     }
 }
 
-print("🧠 正在连接本地 Ollama 大脑...")
-# 初始化两个工具
-m = Memory.from_config(config_ollama)  # 智能大脑
+print(f"🧠 正在连接云端大脑 (反代)...")
+# 👇 注意这里！一定要用 config_cloud，不要用 config_ollama！
+m = Memory.from_config(config_cloud)
 notion = Client(auth=notion_key)       # 日记本
 mcp = FastMCP("Notion Brain V3 (Local)")
 
