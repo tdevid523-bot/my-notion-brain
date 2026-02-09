@@ -1,8 +1,8 @@
 fastmcp
 uvicorn
-notion-client>=2.0.0  <-- 强制使用 2.0 以上的新版
+notion-client>=2.0.0
 python-dotenv
 starlette
 pydantic
-pinecone-client       <-- 建议把 pinecone 改为 pinecone-client (标准名)
+pinecone
 fastembed
