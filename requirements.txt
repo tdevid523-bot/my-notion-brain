@@ -4,6 +4,5 @@ notion-client
 python-dotenv
 starlette
 pydantic
-mem0ai
-qdrant-client
-openai
+pinecone
+fastembed
