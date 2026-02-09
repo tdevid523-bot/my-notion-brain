@@ -60,32 +60,44 @@ def get_latest_diary():
     获取最近一次的日记，用来回忆上次聊了什么，防止聊天断片。
     """
     try:
-        # 搜索最近的一篇“日记”
+        # 1. 安全检查：确保数据库 ID 存在
+        if not database_id:
+            return "❌ 错误：未设置 NOTION_DATABASE_ID"
+
+        # 2. 查询数据库 (使用标准 API)
         response = notion.databases.query(
             database_id=database_id,
             filter={"property": "Category", "select": {"equals": "日记"}},
             sorts=[{"property": "Date", "direction": "descending"}],
             page_size=1
         )
+        
+        # 3. 处理空结果
         if not response["results"]:
             return "📭 还没有写过日记，这是我们的第一次聊天。"
         
+        # 4. 提取内容
         page = response["results"][0]
         page_id = page["id"]
         
-        # 获取内容
+        # 获取页面里的文字块
         blocks = notion.blocks.children.list(block_id=page_id)
         content = ""
         for b in blocks["results"]:
             if "paragraph" in b and b["paragraph"]["rich_text"]:
                 for t in b["paragraph"]["rich_text"]:
-                    content += t["text"]["content"]
+                    content += t["text"]["content"] + "\n"
                     
         return f"📖 上次记忆回放:\n{content}"
+        
+    except AttributeError:
+        # 🚑 紧急修复：如果报 'no attribute query'，说明可能安装了错误的 notion 库
+        return "❌ 库冲突错误：请在 requirements.txt 确认安装的是 'notion-client' 而不是 'notion'。"
     except Exception as e:
-        return f"❌ 回忆失败: {e}"
-    
-   # --- 🛠️ 新增工具 3: 自由写作 (知识库/笔记) ---
+        return f"❌ 回忆失败: {str(e)}"
+
+# --- 🛠️ 新增工具 3: 自由写作 (知识库/笔记) ---
+# ⚠️ 注意：这个函数必须顶格写，不能有缩进！
 @mcp.tool()
 def save_note(title: str, content: str, tag: str = "灵感"):
     """
@@ -97,11 +109,11 @@ def save_note(title: str, content: str, tag: str = "灵感"):
     """
     today = datetime.date.today().isoformat()
     try:
+        # 1. 尝试创建页面
         notion.pages.create(
             parent={"database_id": database_id},
             properties={
                 "Title": {"title": [{"text": {"content": title}}]},
-                # 注意：如果你的 Notion 里没有这个标签选项，可能会报错，建议在 Notion 里先加好
                 "Category": {"select": {"name": tag}}, 
                 "Date": {"date": {"start": today}}
             },
@@ -115,8 +127,7 @@ def save_note(title: str, content: str, tag: str = "灵感"):
         )
         return f"✅ 已创建笔记：《{title}》"
     except Exception as e:
-        return f"❌ 写作失败: {e} (可能是标签 '{tag}' 在 Notion 里不存在)" 
-
+        return f"❌ 写作失败: {e}"
 # --- 原有工具: 同步索引 ---
 @mcp.tool()
 def sync_notion_index():
