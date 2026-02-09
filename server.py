@@ -174,12 +174,30 @@ def search_memory_semantic(query: str):
 
 # --- 通行证中间件 (保持不变) ---
 class HostFixMiddleware:
-    def __init__(self, app: ASGIApp): self.app = app
+    def __init__(self, app: ASGIApp): 
+        self.app = app
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         if scope["type"] == "http":
+            # 🚑 新增：拦截健康检查请求
+            # Render 会不停访问根路径 "/"，我们必须返回 200 OK 它才认为服务正常
+            if scope["path"] == "/" or scope["path"] == "/health":
+                await send({
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"text/plain")],
+                })
+                await send({
+                    "type": "http.response.body",
+                    "body": b"OK: Server is running!",
+                })
+                return
+
+            # 原有逻辑：修复 Host 头
             headers = dict(scope.get("headers", []))
             headers[b"host"] = b"localhost:8000"
             scope["headers"] = list(headers.items())
+            
         await self.app(scope, receive, send)
 
 if __name__ == "__main__":
