@@ -7,10 +7,10 @@ from pinecone import Pinecone
 from fastembed import TextEmbedding
 from starlette.types import ASGIApp, Scope, Receive, Send
 
-# 1. 获取配置
-notion_key = os.environ.get("NOTION_API_KEY")
-database_id = os.environ.get("NOTION_DATABASE_ID")
-pinecone_key = os.environ.get("PINECONE_API_KEY")
+# 1. 获取配置 (自动去除可能误复制的空格或换行符)
+notion_key = os.environ.get("NOTION_API_KEY", "").strip()
+database_id = os.environ.get("NOTION_DATABASE_ID", "").strip()
+pinecone_key = os.environ.get("PINECONE_API_KEY", "").strip()
 
 # 2. 初始化
 print("⏳ 正在初始化 V2 进化版服务...")
