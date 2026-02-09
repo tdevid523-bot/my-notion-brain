@@ -13,7 +13,7 @@ database_id = os.environ.get("NOTION_DATABASE_ID")
 pinecone_key = os.environ.get("PINECONE_API_KEY")
 
 # 2. 初始化
-print("⏳ 正在初始化 V3 最终版...")
+print("⏳ 正在初始化 Final Version...")
 notion = Client(auth=notion_key)
 
 if pinecone_key:
@@ -25,26 +25,20 @@ else:
 
 mcp = FastMCP("Notion Brain V2")
 
-# --- 🛠️ 强力伪装中间件 (带日志版) ---
-class ForceLocalhostMiddleware:
+# --- 🛠️ 强力修正中间件 ---
+class FixHostMiddleware:
     def __init__(self, app: ASGIApp):
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         if scope["type"] == "http":
+            # 1. 强制覆盖 Host 头为 localhost
             headers = dict(scope.get("headers", []))
-            
-            # 🛑 打印日志：证明新代码生效了
-            original_host = headers.get(b"host", b"unknown").decode()
-            # print(f"🔍 收到请求，原始 Host: {original_host}，正在伪装成 localhost...")
-            
-            # 强制修改 Host 头
             headers[b"host"] = b"localhost"
             scope["headers"] = list(headers.items())
-            
         await self.app(scope, receive, send)
 
-# --- 🛠️ 工具部分 ---
+# --- 🛠️ 工具列表 ---
 @mcp.tool()
 def save_daily_diary(summary: str, mood: str = "平静"):
     today = datetime.date.today().isoformat()
@@ -91,12 +85,19 @@ def search_memory_semantic(query: str):
         return ans
     except Exception as e: return f"❌ 失败: {e}"
 
+# --- 🚀 启动配置 (关键修改) ---
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 7860))
-    print(f"🚀 V3 服务启动中，端口: {port}")
+    print(f"🚀 服务启动中 (HTTP/1.1 Mode)，端口: {port}")
     
-    # 这里的顺序极其重要！
-    app = mcp.sse_app() 
-    app = ForceLocalhostMiddleware(app) # 👈 必须套在这里
+    app = mcp.sse_app()
+    app = FixHostMiddleware(app) # 套上中间件
     
-    uvicorn.run(app, host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=port,
+        proxy_headers=True,
+        forwarded_allow_ips="*", # 信任 Render 代理 IP
+        http="h11"               # 👈【绝杀】强制使用 HTTP/1.1 协议，彻底根除 421 错误
+    )
