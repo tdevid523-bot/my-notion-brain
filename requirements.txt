@@ -4,5 +4,5 @@ notion-client>=2.0.0
 python-dotenv
 starlette
 pydantic
-pinecone-client
+pinecone
 fastembed
