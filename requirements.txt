@@ -1,9 +1,9 @@
-fastmcp
+mcp
 uvicorn
 notion-client>=2.0.0
 python-dotenv
 starlette
 pydantic
-pinecone
+pinecone-client
 fastembed
 twilio
