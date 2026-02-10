@@ -256,46 +256,47 @@ def send_wechat_vip(content: str):
         return f"❌ 网络错误: {e}"
     
     # --- 🛠️ 修改后的工具: 发送网易邮件 ---
+# --- 🛠️ 方案二：用 Resend API 发邮件 (Render 拦不住版) ---
 @mcp.tool()
-def send_email_163(subject: str, content: str):
+def send_email_via_api(subject: str, content: str):
     """
-    【发送邮件】通过网易163邮箱发送提醒。
-    subject: 邮件标题
-    content: 邮件内容
+    【必成版】通过 Resend API 发送邮件。
+    Render 无法拦截这个，因为它走的是网页 HTTP 协议。
     """
-    import smtplib
-    from email.mime.text import MIMEText
-    from email.utils import formataddr
-
-    # 👇 这里改成了网易的服务器
-    mail_host = "smtp.163.com"  
-    mail_port = 465             
+    import requests
+    import os
     
-    # 依然是从环境变量读取，不用改变量名，只改 Render 里的值即可
-    mail_user = os.environ.get("EMAIL_USER")     # 你的网易邮箱 (xxx@163.com)
-    mail_pass = os.environ.get("EMAIL_PASSWORD") # 刚才获取的网易授权码
-    to_user = os.environ.get("MY_EMAIL")         # 收件人 (可以是你自己的 QQ 或 163)
-
-    if not all([mail_user, mail_pass, to_user]):
-        return "❌ 错误：环境变量未配置！"
-
+    # 1. 你的 Resend API Key
+    api_key = os.environ.get("RESEND_API_KEY")
+    # 2. 你的收件人邮箱
+    to_email = os.environ.get("MY_EMAIL")
+    
+    if not api_key: return "❌ 错误：未配置 RESEND_API_KEY"
+    
+    print("🚀 正在通过 API 发送邮件...")
+    
     try:
-        msg = MIMEText(content, 'plain', 'utf-8')
-        # 发件人昵称可以自定义，比如 "你的AI助手"
-        msg['From'] = formataddr(["你的AI助手", mail_user]) 
-        msg['To'] = formataddr(["主人", to_user])
-        msg['Subject'] = subject
-
-        # 连接网易服务器
-        server = smtplib.SMTP_SSL(mail_host, mail_port)
-        server.login(mail_user, mail_pass)
-        server.sendmail(mail_user, [to_user,], msg.as_string())
-        server.quit()
+        resp = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "from": "onboarding@resend.dev", # ⚠️ 免费版必须用这个发件人，别改！
+                "to": [to_email],
+                "subject": subject,
+                "text": content
+            }
+        )
         
-        return "✅ 网易邮件发送成功！"
-        
+        if resp.status_code == 200:
+            return "✅ 邮件已通过 API 发送成功！"
+        else:
+            return f"❌ 发送失败，Resend 返回: {resp.text}"
+            
     except Exception as e:
-        return f"❌ 发送失败: {e}"
+        return f"❌ 网络请求错误: {e}"
 # --- 原有工具: 搜索 ---
 @mcp.tool()
 def search_memory_semantic(query: str):
