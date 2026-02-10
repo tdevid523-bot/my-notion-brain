@@ -365,14 +365,48 @@ def start_autonomous_life():
 # 5. 🚀 启动入口
 # ==========================================
 
-if __name__ == "__main__":
-    # 1. 启动自主思考的心脏
-    start_autonomous_life()
-    
-    # 2. 获取端口
-    port = int(os.environ.get("PORT", 10000))
-    print(f"🚀 Notion Brain V3.2 (No-Middleware) is running on port {port}...")
+# 🚑 救火中间件：既要骗过服务器(Host)，又要保留连接(Headers)
+class HostFixMiddleware:
+    def __init__(self, app: ASGIApp):
+        self.app = app
 
-    # 3. 直接运行，不要中间件！
-    # 删除了 HostFixMiddleware，让手机能正确识别服务器地址
-    uvicorn.run(mcp.sse_app(), host="0.0.0.0", port=port)
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] == "http":
+            # 1. 给 Render 的健康检查直接放行，不进入 App 逻辑
+            if scope.get("path") in ["/", "/health"]:
+                await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/plain")]})
+                await send({"type": "http.response.body", "body": b"OK"})
+                return
+
+            # 2. 精细化修改 Host，保留其他所有 Header (防止 SSE 断连)
+            # 不要用 dict() 转换，否则会丢失重复的 key 或顺序
+            headers = scope.get("headers", [])
+            new_headers = []
+            host_replaced = False
+            
+            for key, value in headers:
+                if key == b"host":
+                    new_headers.append((b"host", b"localhost:8000")) # 伪装成 localhost
+                    host_replaced = True
+                else:
+                    new_headers.append((key, value)) # 原样保留其他头
+            
+            if not host_replaced:
+                new_headers.append((b"host", b"localhost:8000"))
+            
+            scope["headers"] = new_headers
+
+        await self.app(scope, receive, send)
+
+if __name__ == "__main__":
+    start_autonomous_life()
+    port = int(os.environ.get("PORT", 10000))
+    
+    # 套上温柔版中间件
+    app = HostFixMiddleware(mcp.sse_app())
+    
+    print(f"🚀 Notion Brain V3.3 (Proxy-Fix) running on port {port}...")
+    
+    # ✅ 关键修改：添加 proxy_headers=True
+    # 这告诉服务器：“我是运行在 Render 代理后面的，请信任转发过来的连接信息”
+    uvicorn.run(app, host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")
