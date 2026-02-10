@@ -60,62 +60,90 @@ def save_daily_diary(summary: str, mood: str = "平静"):
 def get_latest_diary():
     """
     【每次开聊前自动调用】
-    获取最近一次的日记。
+    获取最近一次的日记 (使用原生请求，无视库版本问题)。
     """
+    import json
+    import urllib.request
+    import urllib.error
+
     try:
         if not database_id: return "❌ 错误：未设置 NOTION_DATABASE_ID"
-
-        # 🛠️ 策略变更：由于你的环境 query 报错，我们改用 search (既然索引能用，search 就是好的)
-        # 我们搜索最近修改的页面，然后在 Python 里筛选属于你那个数据库的页面
-        response = notion.search(
-            filter={"value": "page", "property": "object"},
-            sort={"direction": "descending", "timestamp": "last_edited_time"},
-            page_size=20 
-        )
-
-        target_page = None
-        clean_target_id = database_id.replace("-", "")
-
-        # 在搜索结果中找到属于目标数据库的最新一页
-        for page in response["results"]:
-            parent = page.get("parent", {})
-            # 检查这个页面的父亲是不是我们的数据库 ID
-            if parent.get("type") == "database_id":
-                pid = parent.get("database_id", "").replace("-", "")
-                if pid == clean_target_id:
-                    target_page = page
-                    break
         
-        if not target_page:
-            return "📭 还没有写过日记（或 Notion 搜索未更新），这是我们的第一次聊天。"
+        # 1. 准备请求头 (直接模拟浏览器/标准客户端)
+        headers = {
+            "Authorization": f"Bearer {notion_key}",
+            "Notion-Version": "2022-06-28", # 强制指定稳定版本
+            "Content-Type": "application/json"
+        }
 
-        # --- 开始解析内容 (包含之前的格式增强修复) ---
-        page_id = target_page["id"]
-        blocks = notion.blocks.children.list(block_id=page_id)
+        # 2. 步骤一：查找最新日记 (POST /databases/:id/query)
+        # 这里的逻辑是：直接发 HTTP 请求，不走 notion.client 库
+        query_url = f"https://api.notion.com/v1/databases/{database_id}/query"
+        query_payload = {
+            "page_size": 1,
+            "sorts": [{"timestamp": "created_time", "direction": "descending"}],
+            # 如果你的表格没有 Category 列，可以把下面这个 filter 块删掉
+            "filter": {
+                "property": "Category",
+                "select": {"equals": "日记"}
+            }
+        }
+        
+        req = urllib.request.Request(query_url, data=json.dumps(query_payload).encode('utf-8'), headers=headers, method="POST")
+        
+        try:
+            with urllib.request.urlopen(req) as response:
+                query_data = json.loads(response.read().decode('utf-8'))
+        except urllib.error.HTTPError as e:
+            # 如果是因为筛选失败（比如没有Category列），尝试不带筛选再查一次
+            print(f"⚠️ 筛选查询失败，尝试无筛选查询: {e}")
+            query_payload.pop("filter", None)
+            req = urllib.request.Request(query_url, data=json.dumps(query_payload).encode('utf-8'), headers=headers, method="POST")
+            with urllib.request.urlopen(req) as response:
+                query_data = json.loads(response.read().decode('utf-8'))
+
+        if not query_data.get("results"):
+            return "📭 还没有写过日记（数据库为空）。"
+
+        # 3. 步骤二：获取页面内容 (GET /blocks/:id/children)
+        page_id = query_data["results"][0]["id"]
+        blocks_url = f"https://api.notion.com/v1/blocks/{page_id}/children?page_size=100"
+        
+        req_blocks = urllib.request.Request(blocks_url, headers=headers, method="GET")
+        with urllib.request.urlopen(req_blocks) as response:
+            blocks_data = json.loads(response.read().decode('utf-8'))
+
+        # 4. 步骤三：解析内容 (手动拼接文本)
         content = ""
-        
-        for b in blocks["results"]:
-            b_type = b["type"]
+        for b in blocks_data.get("results", []):
+            b_type = b.get("type")
             text_list = []
+            
+            # 提取 rich_text
             if b_type in b and "rich_text" in b[b_type]:
                 for t in b[b_type]["rich_text"]:
-                    text_list.append(t["text"]["content"])
+                    text_list.append(t.get("text", {}).get("content", ""))
             
             current_text = "".join(text_list)
             
+            # 简单格式化
+            if not current_text: continue
+            
             if b_type == "paragraph": content += current_text + "\n"
-            elif b_type.startswith("heading"): content += f"【{current_text}】\n"
-            elif "list_item" in b_type: content += f"• {current_text}\n"
+            elif b_type and b_type.startswith("heading"): content += f"【{current_text}】\n"
+            elif "list_item" in str(b_type): content += f"• {current_text}\n"
             elif b_type == "to_do": 
-                checked = "✅" if b["to_do"]["checked"] else "🔲"
+                checked = "✅" if b["to_do"].get("checked") else "🔲"
                 content += f"{checked} {current_text}\n"
-            elif current_text: content += f"{current_text}\n"
+            else: content += f"{current_text}\n"
 
-        return f"📖 上次记忆回放 (来自最近更新):\n{content}"
+        return f"📖 上次记忆回放 (原生API版):\n{content}"
 
     except Exception as e:
-        print(f"❌ 读取失败: {e}")
-        return f"❌ 抱歉，读取记忆出错: {e}"
+        print(f"❌ 原生请求失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"❌ 还是读取失败: {e}"
 # --- 🛠️ 新增工具 3: 自由写作 (知识库/笔记) ---
 # ⚠️ 注意：这个函数必须顶格写，不能有缩进！
 @mcp.tool()
