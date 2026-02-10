@@ -255,44 +255,47 @@ def send_wechat_vip(content: str):
     except Exception as e:
         return f"❌ 网络错误: {e}"
     
-    # 2. 这是 QQ 邮箱专用的发送工具
+    # --- 🛠️ 修改后的工具: 发送网易邮件 ---
 @mcp.tool()
-def send_qq_email(subject: str, content: str):
+def send_email_163(subject: str, content: str):
     """
-    【发送QQ邮件】当需要弹窗提醒主人时调用。
-    subject: 邮件标题 (例如：'Gemini的紧急提醒')
+    【发送邮件】通过网易163邮箱发送提醒。
+    subject: 邮件标题
     content: 邮件内容
     """
-    # 从 Render 环境变量里找配置
-    mail_host = "smtp.qq.com"  # QQ 邮箱固定是这个
-    mail_port = 465            # QQ 邮箱固定端口
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.utils import formataddr
+
+    # 👇 这里改成了网易的服务器
+    mail_host = "smtp.163.com"  
+    mail_port = 465             
     
-    # 获取你的账号密码
-    mail_user = os.environ.get("EMAIL_USER")     # 你的QQ号@qq.com
-    mail_pass = os.environ.get("EMAIL_PASSWORD") # 那串16位授权码
-    to_user = os.environ.get("MY_EMAIL")         # 收件人(还是你)
+    # 依然是从环境变量读取，不用改变量名，只改 Render 里的值即可
+    mail_user = os.environ.get("EMAIL_USER")     # 你的网易邮箱 (xxx@163.com)
+    mail_pass = os.environ.get("EMAIL_PASSWORD") # 刚才获取的网易授权码
+    to_user = os.environ.get("MY_EMAIL")         # 收件人 (可以是你自己的 QQ 或 163)
 
     if not all([mail_user, mail_pass, to_user]):
-        return "❌ 发送失败：Render 环境变量没填对！"
+        return "❌ 错误：环境变量未配置！"
 
     try:
-        # 组装邮件
         msg = MIMEText(content, 'plain', 'utf-8')
-        msg['From'] = formataddr(["你的AI伴侣", mail_user]) # 发件人名字随便改
+        # 发件人昵称可以自定义，比如 "你的AI助手"
+        msg['From'] = formataddr(["你的AI助手", mail_user]) 
         msg['To'] = formataddr(["主人", to_user])
         msg['Subject'] = subject
 
-        # 连接腾讯服务器发送
+        # 连接网易服务器
         server = smtplib.SMTP_SSL(mail_host, mail_port)
         server.login(mail_user, mail_pass)
         server.sendmail(mail_user, [to_user,], msg.as_string())
         server.quit()
         
-        return "✅ 邮件已发送！请留意手机 QQ 邮箱 App 的弹窗。"
+        return "✅ 网易邮件发送成功！"
         
     except Exception as e:
         return f"❌ 发送失败: {e}"
-
 # --- 原有工具: 搜索 ---
 @mcp.tool()
 def search_memory_semantic(query: str):
