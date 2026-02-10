@@ -98,17 +98,38 @@ def get_latest_diary():
         # 获取页面里的文字块
         blocks = notion.blocks.children.list(block_id=page_id)
         content = ""
+        
+        # 🤖 增强版解析：支持标题、列表、待办、引用、代码块
         for b in blocks["results"]:
-            # 提取段落文本
-            if "paragraph" in b and b["paragraph"]["rich_text"]:
-                for t in b["paragraph"]["rich_text"]:
-                    content += t["text"]["content"]
-                content += "\n"
-            # 提取无序列表文本 (以防你用了列表)
-            elif "bulleted_list_item" in b and b["bulleted_list_item"]["rich_text"]:
-                for t in b["bulleted_list_item"]["rich_text"]:
-                    content += "• " + t["text"]["content"]
-                content += "\n"
+            b_type = b["type"]
+            text_list = []
+            
+            # 1. 尝试提取 rich_text 里的纯文本
+            if b_type in b and "rich_text" in b[b_type]:
+                for t in b[b_type]["rich_text"]:
+                    text_list.append(t["text"]["content"])
+            
+            current_text = "".join(text_list)
+            
+            # 2. 根据类型添加格式
+            if b_type == "paragraph":
+                content += current_text + "\n"
+            elif b_type.startswith("heading"): # 标题 1, 2, 3
+                content += f"【{current_text}】\n"
+            elif "bulleted_list_item" in b_type:
+                content += f"• {current_text}\n"
+            elif "numbered_list_item" in b_type:
+                content += f"1. {current_text}\n"
+            elif b_type == "to_do":
+                # 检查是否勾选
+                is_checked = "✅" if b["to_do"]["checked"] else "🔲"
+                content += f"{is_checked} {current_text}\n"
+            elif b_type == "quote":
+                content += f"> {current_text}\n"
+            elif b_type == "code":
+                content += f"```\n{current_text}\n```\n"
+            elif current_text: # 其他类型主要有字就显示
+                content += f"{current_text}\n"
                     
         return f"📖 上次记忆回放:\n{content}"
 
