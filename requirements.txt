@@ -6,3 +6,4 @@ starlette
 pydantic
 pinecone
 fastembed
+twilio
