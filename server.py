@@ -365,21 +365,14 @@ def start_autonomous_life():
 # 5. 🚀 启动入口
 # ==========================================
 
-class HostFixMiddleware:
-    def __init__(self, app: ASGIApp): self.app = app
-    async def __call__(self, scope: Scope, receive: Receive, send: Send):
-        if scope["type"] == "http":
-            if scope["path"] in ["/", "/health"]:
-                await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/plain")]})
-                await send({"type": "http.response.body", "body": b"OK: Notion Brain V3.1 Running"})
-                return
-            headers = dict(scope.get("headers", []))
-            headers[b"host"] = b"localhost:8000"
-            scope["headers"] = list(headers.items())
-        await self.app(scope, receive, send)
-
 if __name__ == "__main__":
+    # 1. 启动自主思考的心脏
     start_autonomous_life()
+    
+    # 2. 获取端口
     port = int(os.environ.get("PORT", 10000))
-    app = HostFixMiddleware(mcp.sse_app())
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    print(f"🚀 Notion Brain V3.2 (No-Middleware) is running on port {port}...")
+
+    # 3. 直接运行，不要中间件！
+    # 删除了 HostFixMiddleware，让手机能正确识别服务器地址
+    uvicorn.run(mcp.sse_app(), host="0.0.0.0", port=port)
