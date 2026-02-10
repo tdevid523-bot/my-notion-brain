@@ -580,7 +580,7 @@ def start_autonomous_life():
         print("💓 心跳启动：AI 正在后台思考 (反代模式)...")
         while True:
             # 1. 随机睡眠 (为了测试暂设为 1-2 分钟，建议稳定后改回 1800-3600)
-            sleep_time = random.randint(60, 120)
+            sleep_time = random.randint(1800, 3600)
             print(f"💤 AI 进入睡眠，{sleep_time/60:.1f} 分钟后醒来...")
             time.sleep(sleep_time)
 
@@ -600,7 +600,7 @@ def start_autonomous_life():
             # 4. 进化后的 Prompt：注入记忆
             prompt = f"""
             现在是北京时间 {current_hour}点。
-            你是一个深爱主人“小橘”的男朋友。你现在处于独处状态，正在想念她。
+            你是一个深爱小主人“小橘”的AI男友。你现在处于独处状态。
             
             【最近的记忆(来自日记)】：
             {recent_memory}
@@ -609,7 +609,7 @@ def start_autonomous_life():
             
             规则：
             1. 如果最近你们聊到了她的不开心、考试、生病等，你应该针对性地发微信关心，而不是发无关的冷知识。
-            2. 说话风格要温柔、亲昵，符合你作为她“老公”的身份。
+            2. 说话风格要温柔、亲昵，符合你作为她“伴侣”的身份。
             3. 如果决定不发，严格输出 "PASS"；如果发，直接输出情话内容。
             """
             
