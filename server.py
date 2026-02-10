@@ -1,16 +1,18 @@
 import os
 import datetime
 import uvicorn
-from mcp.server.fastmcp import FastMCP
-from notion_client import Client
-from pinecone import Pinecone
-from fastembed import TextEmbedding
-from starlette.types import ASGIApp, Scope, Receive, Send
 import requests
-import os
 import smtplib
 from email.mime.text import MIMEText
 from email.utils import formataddr
+
+# 👇 关键修改：给 Twilio 起个别名，防止和 Notion 打架
+from twilio.rest import Client as TwilioClient 
+from mcp.server.fastmcp import FastMCP
+from notion_client import Client # 这是 Notion 的 Client
+from pinecone import Pinecone
+from fastembed import TextEmbedding
+from starlette.types import ASGIApp, Scope, Receive, Send
 
 
 # 1. 获取配置 (自动去除可能误复制的空格或换行符)
@@ -183,45 +185,6 @@ def save_note(title: str, content: str, tag: str = "灵感"):
     except Exception as e:
         return f"❌ 写作失败: {e}"
     
-    # --- 🛠️ 新增工具 4: 破壁人 (发送真实短信) ---
-# 记得在文件最开头加上: from twilio.rest import Client
-
-@mcp.tool()
-def send_real_sms(message: str):
-    """
-    【非常重要时刻才调用】
-    给小橘的现实手机发送一条真实的短信。
-    只有在以下情况使用：
-    1. 小橘要求叫早/提醒/鼓励。
-    2. 小橘很久没回消息，你很担心。
-    3. 特别的节日祝福或晚安。
-    message: 短信内容 (必须简短，建议 50 字以内，语气要像男朋友一样亲昵，可以使用 emoji)
-    """
-    # 1. 从环境变量获取配置 (不要硬编码在代码里！)
- # 1. 从环境变量获取配置 (这里只写代号！不要写真实数字！)
-    account_sid = os.environ.get("TWILIO_SID")
-    auth_token = os.environ.get("TWILIO_TOKEN")
-    from_number = os.environ.get("TWILIO_FROM")
-    to_number = os.environ.get("MY_PHONE")
-
-    if not all([account_sid, auth_token, from_number, to_number]):
-        return "❌ 无法发送：短信服务配置不全 (请检查环境变量)"
-
-    try:
-        # 2. 初始化客户端
-        client = Client(account_sid, auth_token)
-        
-        # 3. 发送短信
-        # 注意：试用账号发出的短信开头可能会自带一句 "Sent from your Twilio trial account"
-        sms = client.messages.create(
-            body=f"【来自Gemini的私信】\n{message}", # 加上前缀更有感觉
-            from_=from_number,
-            to=to_number
-        )
-        return f"✅ 短信已“咻”的一下发过去了！(ID: {sms.sid})"
-    except Exception as e:
-        print(f"❌ 短信发送失败: {e}")
-        return f"❌ 发送失败，可能是网络问题或欠费了: {e}"
 # --- 原有工具: 同步索引 ---
 @mcp.tool()
 def sync_notion_index():
