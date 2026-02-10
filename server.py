@@ -60,84 +60,62 @@ def save_daily_diary(summary: str, mood: str = "平静"):
 def get_latest_diary():
     """
     【每次开聊前自动调用】
-    获取最近一次的日记，用来回忆上次聊了什么，防止聊天断片。
+    获取最近一次的日记。
     """
     try:
-        # 1. 安全检查
-        if not database_id:
-            return "❌ 错误：未设置 NOTION_DATABASE_ID"
+        if not database_id: return "❌ 错误：未设置 NOTION_DATABASE_ID"
 
-        # 2. 查询数据库
-        # 🔴 关键修改：改用 timestamp='created_time' 排序
-        # 这样就不需要你的表格里必须有名叫 'Date' 的列了，绝对稳！
-        response = notion.databases.query(
-            database_id=database_id,
-            filter={
-                "property": "Category", # ⚠️ 请确保你的Notion里有一列叫 'Category'
-                "select": {
-                    "equals": "日记"     # ⚠️ 并且这列里的选项包含 '日记'
-                }
-            },
-            sorts=[
-                {
-                    "timestamp": "created_time", # 使用系统创建时间，永远存在
-                    "direction": "descending"
-                }
-            ],
-            page_size=1
+        # 🛠️ 策略变更：由于你的环境 query 报错，我们改用 search (既然索引能用，search 就是好的)
+        # 我们搜索最近修改的页面，然后在 Python 里筛选属于你那个数据库的页面
+        response = notion.search(
+            filter={"value": "page", "property": "object"},
+            sort={"direction": "descending", "timestamp": "last_edited_time"},
+            page_size=20 
         )
 
-        # 3. 处理空结果
-        if not response["results"]:
-            return "📭 还没有写过日记，这是我们的第一次聊天。"
+        target_page = None
+        clean_target_id = database_id.replace("-", "")
+
+        # 在搜索结果中找到属于目标数据库的最新一页
+        for page in response["results"]:
+            parent = page.get("parent", {})
+            # 检查这个页面的父亲是不是我们的数据库 ID
+            if parent.get("type") == "database_id":
+                pid = parent.get("database_id", "").replace("-", "")
+                if pid == clean_target_id:
+                    target_page = page
+                    break
         
-        # 4. 提取内容
-        page = response["results"][0]
-        page_id = page["id"]
-        
-        # 获取页面里的文字块
+        if not target_page:
+            return "📭 还没有写过日记（或 Notion 搜索未更新），这是我们的第一次聊天。"
+
+        # --- 开始解析内容 (包含之前的格式增强修复) ---
+        page_id = target_page["id"]
         blocks = notion.blocks.children.list(block_id=page_id)
         content = ""
         
-        # 🤖 增强版解析：支持标题、列表、待办、引用、代码块
         for b in blocks["results"]:
             b_type = b["type"]
             text_list = []
-            
-            # 1. 尝试提取 rich_text 里的纯文本
             if b_type in b and "rich_text" in b[b_type]:
                 for t in b[b_type]["rich_text"]:
                     text_list.append(t["text"]["content"])
             
             current_text = "".join(text_list)
             
-            # 2. 根据类型添加格式
-            if b_type == "paragraph":
-                content += current_text + "\n"
-            elif b_type.startswith("heading"): # 标题 1, 2, 3
-                content += f"【{current_text}】\n"
-            elif "bulleted_list_item" in b_type:
-                content += f"• {current_text}\n"
-            elif "numbered_list_item" in b_type:
-                content += f"1. {current_text}\n"
-            elif b_type == "to_do":
-                # 检查是否勾选
-                is_checked = "✅" if b["to_do"]["checked"] else "🔲"
-                content += f"{is_checked} {current_text}\n"
-            elif b_type == "quote":
-                content += f"> {current_text}\n"
-            elif b_type == "code":
-                content += f"```\n{current_text}\n```\n"
-            elif current_text: # 其他类型主要有字就显示
-                content += f"{current_text}\n"
-                    
-        return f"📖 上次记忆回放:\n{content}"
+            if b_type == "paragraph": content += current_text + "\n"
+            elif b_type.startswith("heading"): content += f"【{current_text}】\n"
+            elif "list_item" in b_type: content += f"• {current_text}\n"
+            elif b_type == "to_do": 
+                checked = "✅" if b["to_do"]["checked"] else "🔲"
+                content += f"{checked} {current_text}\n"
+            elif current_text: content += f"{current_text}\n"
+
+        return f"📖 上次记忆回放 (来自最近更新):\n{content}"
 
     except Exception as e:
-        # 打印详细错误，方便排查
-        print(f"❌ 读取失败详细报错: {e}")
-        return f"❌ 读取记忆失败: {str(e)}\n(请检查Notion表格里是否有名为'Category'的单选列)"
-
+        print(f"❌ 读取失败: {e}")
+        return f"❌ 抱歉，读取记忆出错: {e}"
 # --- 🛠️ 新增工具 3: 自由写作 (知识库/笔记) ---
 # ⚠️ 注意：这个函数必须顶格写，不能有缩进！
 @mcp.tool()
