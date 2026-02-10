@@ -13,6 +13,9 @@ from notion_client import Client # 这是 Notion 的 Client
 from pinecone import Pinecone
 from fastembed import TextEmbedding
 from starlette.types import ASGIApp, Scope, Receive, Send
+import threading  # 👈 核心：用于后台运行
+import time       # 用于控制发送间隔
+import json       # 用于解析多条消息列表
 
 
 # 1. 获取配置 (自动去除可能误复制的空格或换行符)
@@ -297,6 +300,69 @@ def send_email_via_api(subject: str, content: str):
             
     except Exception as e:
         return f"❌ 网络请求错误: {e}"
+    # --- 🛠️ 新增工具: 后台批量/定时轰炸机 ---
+@mcp.tool()
+def send_multi_message_background(messages_json: str, interval: int = 3):
+    """
+    【高级功能】在后台连续发送多条微信消息，不阻塞当前聊天。
+    用于：分段讲故事、连续提醒、或发送一系列很长的内容。
+    
+    参数:
+    messages_json: 消息列表的JSON字符串 (例如: '["第一条", "第二条", "晚安"]')
+    interval: 每条消息发送的间隔秒数 (默认3秒，防止被封)
+    """
+    
+    # 1. 定义后台实际干活的函数
+    def _background_worker(msg_list, wait_time, token):
+        url = 'http://www.pushplus.plus/send'
+        print(f"🚀 后台任务启动：准备发送 {len(msg_list)} 条消息...")
+        
+        for i, msg in enumerate(msg_list):
+            try:
+                # 构造请求
+                data = {
+                    "token": token,
+                    "title": f"后台消息 ({i+1}/{len(msg_list)})",
+                    "content": msg,
+                    "template": "html"
+                }
+                requests.post(url, json=data)
+                print(f"✅ 第 {i+1} 条已发送: {msg[:10]}...")
+            except Exception as e:
+                print(f"❌ 发送失败: {e}")
+            
+            # 发完一条睡一会儿，防止接口报错
+            if i < len(msg_list) - 1:
+                time.sleep(wait_time)
+        
+        print("🏁 后台所有消息发送完毕。")
+
+    # 2. 主逻辑
+    token = os.environ.get("PUSHPLUS_TOKEN")
+    if not token: return "❌ 错误：未配置 PUSHPLUS_TOKEN"
+
+    try:
+        # 尝试解析 AI 传过来的 JSON 字符串
+        # AI 有时候会传 Python 列表格式，json.loads 通常能处理
+        if isinstance(messages_json, list):
+            msg_list = messages_json
+        else:
+            msg_list = json.loads(messages_json)
+            
+        if not msg_list or not isinstance(msg_list, list):
+            return "❌ 格式错误：请提供有效的文本列表"
+
+        # 3. 启动线程 (关键步骤！Fire and Forget)
+        # daemon=True 表示如果主程序挂了，这个线程也会随之结束，防止僵尸进程
+        t = threading.Thread(target=_background_worker, args=(msg_list, interval, token), daemon=True)
+        t.start()
+
+        return f"✅ 已启动后台任务！将以 {interval}秒/条 的速度发送 {len(msg_list)} 条消息。您可以继续聊天了。"
+
+    except json.JSONDecodeError:
+        return "❌ 参数格式错误：请确保 messages_json 是标准的 JSON 列表格式 (例如 '[\"A\", \"B\"]')"
+    except Exception as e:
+        return f"❌ 启动失败: {e}"
 # --- 原有工具: 搜索 ---
 @mcp.tool()
 def search_memory_semantic(query: str):
