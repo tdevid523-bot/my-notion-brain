@@ -71,8 +71,37 @@ def _push_wechat(content: str, title: str = "来自Gemini的私信 💌") -> str
         return f"❌ 网络错误: {e}"
 
 def _write_to_notion(title: str, content: str, category: str, extra_emoji: str = "") -> str:
-    """【核心】统一的 Notion 写入函数"""
+    """
+    【核心】统一的 Notion 写入函数 (增强版)。
+    自动处理超过2000字的长文本，防止报错断连。
+    """
     today = datetime.date.today().isoformat()
+    
+    # 1. 安全检查：防止标签为空导致报错
+    if not category: category = "灵感"
+    
+    # 2. 核心修复：Notion限制每个块最多2000字，必须切片
+    # 如果 content 太长，我们把它切成多个段落块
+    children_blocks = []
+    chunk_size = 2000
+    
+    if len(content) > chunk_size:
+        # 切片逻辑
+        for i in range(0, len(content), chunk_size):
+            chunk = content[i:i + chunk_size]
+            children_blocks.append({
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {"rich_text": [{"type": "text", "text": {"content": chunk}}]}
+            })
+    else:
+        # 短文本直接放
+        children_blocks.append({
+            "object": "block",
+            "type": "paragraph",
+            "paragraph": {"rich_text": [{"type": "text", "text": {"content": content}}]}
+        })
+
     try:
         notion.pages.create(
             parent={"database_id": DATABASE_ID},
@@ -81,17 +110,12 @@ def _write_to_notion(title: str, content: str, category: str, extra_emoji: str =
                 "Category": {"select": {"name": category}},
                 "Date": {"date": {"start": today}}
             },
-            children=[{
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{"type": "text", "text": {"content": content}}]
-                }
-            }]
+            children=children_blocks
         )
         return f"✅ 已保存到 Notion：{title} ({category})"
     except Exception as e:
-        return f"❌ 写入 Notion 失败: {e}"
+        print(f"❌ Notion 写入报错: {e}") # 打印日志方便调试
+        return f"❌ 写入失败 (请检查Notion标签是否允许创建): {e}"
 
 # ==========================================
 # 3. 🛠️ MCP 工具集
