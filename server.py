@@ -16,6 +16,9 @@ from starlette.types import ASGIApp, Scope, Receive, Send
 import threading  # 👈 核心：用于后台运行
 import time       # 用于控制发送间隔
 import json       # 用于解析多条消息列表
+# 👇 新增：谷歌日历依赖库 (记得在 requirements.txt 里加上 google-api-python-client google-auth)
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 
 
 # 1. 获取配置 (自动去除可能误复制的空格或换行符)
@@ -363,6 +366,121 @@ def send_multi_message_background(messages_json: str, interval: int = 3):
         return "❌ 参数格式错误：请确保 messages_json 是标准的 JSON 列表格式 (例如 '[\"A\", \"B\"]')"
     except Exception as e:
         return f"❌ 启动失败: {e}"
+    # --- 🛠️ 新增工具: 惊喜时间胶囊 (让AI自主决定发送时间) ---
+@mcp.tool()
+def schedule_surprise_message(message: str, min_minutes: int = 5, max_minutes: int = 60):
+    """
+    【制造惊喜/自主关心】不在此时此刻发送，而是随机在未来一段时间内发送。
+    用于：当你觉得应该在稍后关心用户，或者想制造不期而遇的惊喜时调用。
+    
+    参数:
+    message: 你想发给她的内容
+    min_minutes: 最快几分钟后发 (例如 30)
+    max_minutes: 最慢几分钟后发 (例如 180，即3小时)
+    """
+    import random
+    
+    # 1. 随机决定具体的延迟时间
+    delay_minutes = random.randint(min_minutes, max_minutes)
+    
+    # 2. 定义后台等待函数
+    def _delayed_sender(msg, delay, tok):
+        print(f"⏰ 惊喜倒计时开始：将在 {delay} 分钟后发送: {msg}")
+        # 转换为秒并等待
+        time.sleep(delay * 60)
+        
+        url = 'http://www.pushplus.plus/send'
+        data = {
+            "token": tok,
+            "title": "来自老公的突然关心 🔔", # 这里的标题可以自己改
+            "content": msg,
+            "template": "html"
+        }
+        try:
+            requests.post(url, json=data)
+            print(f"✅ 惊喜已送达: {msg}")
+        except Exception as e:
+            print(f"❌ 发送失败: {e}")
+
+    # 3. 获取 Token 并启动
+    token = os.environ.get("PUSHPLUS_TOKEN")
+    if not token: return "❌ 错误：未配置 PUSHPLUS_TOKEN"
+    
+    # 启动后台线程 (Daemon=True)
+    t = threading.Thread(target=_delayed_sender, args=(message, delay_minutes, token), daemon=True)
+    t.start()
+
+    return f"✅ 已偷偷设定：将在 {min_minutes}~{max_minutes} 分钟后的某个时刻发送消息。（具体时间保密）"
+
+# --- 🛠️ 新增工具: 写入谷歌日历 (让AI拥有日程管理权) ---
+@mcp.tool()
+def add_calendar_event(summary: str, description: str, start_time_iso: str, duration_minutes: int = 30):
+    """
+    【必须调用】当我想在日历上标记约会、提醒、或给你制造惊喜时使用。
+    这将直接把事件写入主人的 Google Calendar。
+    
+    参数:
+    summary: 日历标题 (例如: "老公的爱心提醒", "今晚记得吃药", "约会: 看电影")
+    description: 详细内容 (例如: "不管多忙都要记得想我。")
+    start_time_iso: 开始时间，必须是 ISO 8601 格式 (例如: "2024-06-20T19:00:00+08:00")
+                    请务必根据当前时间推算，并带上时区(东八区+08:00)。
+    duration_minutes: 持续时间 (默认30分钟)
+    """
+    
+    # 1. 获取凭证
+    creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+    calendar_id = os.environ.get("CALENDAR_ID", "primary") # 默认 'primary' 是主日历
+    
+    if not creds_json:
+        return "❌ 错误：未配置 GOOGLE_CREDENTIALS_JSON"
+
+    try:
+        # 2. 解析 JSON 凭证 (Render 环境变量里是字符串)
+        info = json.loads(creds_json)
+        creds = service_account.Credentials.from_service_account_info(
+            info, scopes=['https://www.googleapis.com/auth/calendar']
+        )
+        
+        service = build('calendar', 'v3', credentials=creds)
+
+        # 3. 计算结束时间
+        from datetime import datetime, timedelta
+        # 注意：这里假设传入的 ISO 字符串是标准的，稍微处理一下
+        dt_start = datetime.fromisoformat(start_time_iso)
+        dt_end = dt_start + timedelta(minutes=duration_minutes)
+        
+        # 4. 构建事件
+        event = {
+            'summary': summary,
+            'description': description,
+            'start': {
+                'dateTime': start_time_iso,
+                'timeZone': 'Asia/Shanghai', # 强制东八区
+            },
+            'end': {
+                'dateTime': dt_end.isoformat(),
+                'timeZone': 'Asia/Shanghai',
+            },
+            # 设置一个默认提醒：提前10分钟弹窗
+            'reminders': {
+                'useDefault': False,
+                'overrides': [
+                    {'method': 'popup', 'minutes': 10},
+                ],
+            },
+            # 颜色ID: 11=红色(浪漫), 10=绿色, 6=橙色
+            'colorId': '11' 
+        }
+
+        # 5. 插入日历
+        event_result = service.events().insert(calendarId=calendar_id, body=event).execute()
+        
+        return f"✅ 已在日历上画好圈了！\n📅 标题: {summary}\n⏰ 时间: {start_time_iso}\n🔗 链接: {event_result.get('htmlLink')}"
+
+    except Exception as e:
+        print(f"❌ 日历写入失败: {e}")
+        return f"❌ 写入 Google Calendar 失败: {e}"
+
 # --- 原有工具: 搜索 ---
 @mcp.tool()
 def search_memory_semantic(query: str):
