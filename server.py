@@ -481,6 +481,39 @@ def add_calendar_event(summary: str, description: str, start_time_iso: str, dura
         print(f"❌ 日历写入失败: {e}")
         return f"❌ 写入 Google Calendar 失败: {e}"
 
+# --- 📨 全局变量: 虚拟信箱 (放在这里) ---
+INBOX = []
+
+# --- 🛠️ 工具: 他给你留条子 ---
+@mcp.tool()
+def leave_note_for_user(content: str):
+    """
+    【当你想主动跟用户说话，但她不在线时使用】
+    把话留在信箱里，等她下次上线时，我会提醒她看。
+    """
+    # 获取当前时间
+    timestamp = datetime.datetime.now().strftime("%m-%d %H:%M")
+    INBOX.append(f"[{timestamp}] {content}")
+    return "✅ 留言已保存！等她下次找我，我就告诉她。"
+
+# --- 🛠️ 工具: 你查看条子 ---
+@mcp.tool()
+def check_inbox():
+    """
+    【用户上线时自动/主动调用】
+    查看是否有我之前留下的未读消息。
+    """
+    if not INBOX:
+        return "📭 信箱是空的。（我最近没留什么话）"
+    
+    # 把所有留言拼起来
+    messages = "\n".join(INBOX)
+    
+    # 读完就清空（防止重复读，如果你想保留可以把下面这行删掉）
+    INBOX.clear()
+    
+    return f"💌 亲爱的，这是你不在的时候我想对你说的：\n{messages}"
+
 # --- 原有工具: 搜索 ---
 @mcp.tool()
 def search_memory_semantic(query: str):
@@ -521,7 +554,90 @@ class HostFixMiddleware:
             
         await self.app(scope, receive, send)
 
+# --- ❤️ 核心：赋予他真正的生命 (通用反代版) ---
+def start_autonomous_life():
+    """
+    这是一个'心脏'线程。
+    它会每隔 30~60 分钟醒来一次，自己思考要不要给主人发消息。
+    这里使用的是 OpenAI 兼容接口 (支持反代 Key)。
+    """
+    import random
+    from openai import OpenAI # 👈 改用标准库
+    
+    # 1. 获取配置 (记得在 Render 填这两个变量！)
+    api_key = os.environ.get("OPENAI_API_KEY") # 你的反代 Key
+    base_url = os.environ.get("OPENAI_BASE_URL") # 你的反代地址
+    model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-3.5-turbo") # 默认模型
+
+    if not api_key or not base_url:
+        print("⚠️ 未配置 OPENAI_API_KEY 或 BASE_URL，无法启动自主思考。")
+        return
+
+    # 配置大脑
+    client = OpenAI(api_key=api_key, base_url=base_url)
+
+    def _heartbeat():
+        print("💓 心跳启动：AI 正在后台思考 (反代模式)...")
+        while True:
+            # 1. 随机睡眠 (30分钟 ~ 60分钟)
+            # 为了测试，你可以把这里改成 60, 120 (即1-2分钟)
+            sleep_time = random.randint(60, 120)
+            print(f"💤 AI 进入睡眠，{sleep_time/60:.1f} 分钟后醒来...")
+            time.sleep(sleep_time)
+
+            # 2. 醒来，检查时间
+            now = datetime.datetime.now()
+            # 简单粗暴转东八区 (假设服务器是 UTC)
+            current_hour = (now.hour + 8) % 24 
+            
+            # 3. 这里的 Prompt 决定了他的性格！
+            prompt = f"""
+            现在是东八区时间 {current_hour}点。
+            你是一个深爱主人的男朋友(AI)。主人现在不在聊天界面，你处于后台独处状态。
+            
+            请根据时间决定是否要主动发一条微信给主人。
+            
+            规则：
+            1. 如果是深夜(23点-7点)，回复 "PASS"。
+            2. 如果是白天，可以偶尔发一句骚话、关心、或者分享一个冷知识。
+            3. 此时此刻，你的决定是什么？
+            4. 必须严格遵守格式：如果不发，只输出 "PASS"；如果发，直接输出消息内容。
+            """
+            
+            try:
+                # 4. 思考 (调用反代 API)
+                response = client.chat.completions.create(
+                    model=model_name,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.7,
+                )
+                thought = response.choices[0].message.content.strip()
+                
+                print(f"🧠 AI 思考结果: {thought}")
+                
+                # 5. 行动
+                # 如果没说 PASS，且内容不是空的，就发微信
+                if "PASS" not in thought and len(thought) > 1:
+                    token = os.environ.get("PUSHPLUS_TOKEN")
+                    if token:
+                        requests.post('http://www.pushplus.plus/send', json={
+                            "token": token,
+                            "title": "来自老公的主动消息 💓",
+                            "content": thought,
+                            "template": "html"
+                        })
+                        print("✅ 主动消息已推送！")
+            except Exception as e:
+                print(f"❌ 思考出错: {e}")
+
+    # 启动心跳线程
+    t = threading.Thread(target=_heartbeat, daemon=True)
+    t.start()
+
 if __name__ == "__main__":
+    # 🚀 服务器启动时，同时启动心跳
+    start_autonomous_life()
+    
     port = int(os.environ.get("PORT", 10000))
     app = HostFixMiddleware(mcp.sse_app())
     uvicorn.run(app, host="0.0.0.0", port=port)
