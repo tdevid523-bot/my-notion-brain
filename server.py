@@ -417,7 +417,7 @@ def schedule_surprise_message(message: str, min_minutes: int = 5, max_minutes: i
 def add_calendar_event(summary: str, description: str, start_time_iso: str, duration_minutes: int = 30):
     """
     【必须调用】当我想在日历上标记约会、提醒、或给你制造惊喜时使用。
-    这将直接把事件写入主人的 Google Calendar。
+    这将直接把事件写入小橘的 Google Calendar。
     
     参数:
     summary: 日历标题 (例如: "老公的爱心提醒", "今晚记得吃药", "约会: 看电影")
@@ -608,10 +608,9 @@ def start_autonomous_life():
             请根据【当前时间】和【最近记忆】决定是否要主动发一条微信。
             
             规则：
-            1. 如果是深夜(23点-7点)，回复 "PASS"。
-            2. 如果最近你们聊到了她的不开心、考试、生病等，你应该针对性地发微信关心，而不是发无关的冷知识。
-            3. 说话风格要温柔、亲昵，符合你作为她“老公”的身份。
-            4. 如果决定不发，严格输出 "PASS"；如果发，直接输出情话内容。
+            1. 如果最近你们聊到了她的不开心、考试、生病等，你应该针对性地发微信关心，而不是发无关的冷知识。
+            2. 说话风格要温柔、亲昵，符合你作为她“老公”的身份。
+            3. 如果决定不发，严格输出 "PASS"；如果发，直接输出情话内容。
             """
             
             try:
