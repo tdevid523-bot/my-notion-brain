@@ -6,9 +6,12 @@ from notion_client import Client
 from pinecone import Pinecone
 from fastembed import TextEmbedding
 from starlette.types import ASGIApp, Scope, Receive, Send
+import requests
+import os
 import smtplib
 from email.mime.text import MIMEText
 from email.utils import formataddr
+
 
 # 1. 获取配置 (自动去除可能误复制的空格或换行符)
 # 1. 获取配置 (自动去除可能误复制的换行符或空格，这非常重要！)
@@ -183,37 +186,42 @@ def save_note(title: str, content: str, tag: str = "灵感"):
     # --- 🛠️ 新增工具 4: 破壁人 (发送真实短信) ---
 # 记得在文件最开头加上: from twilio.rest import Client
 
-# --- 🛠️ 新增工具: 邮件通知 ---
 @mcp.tool()
-def send_email_alert(subject: str, content: str):
+def send_real_sms(message: str):
     """
-    发送邮件给小橘。用于重要通知或早安问候。
-    subject: 邮件标题
-    content: 邮件内容
+    【非常重要时刻才调用】
+    给小橘的现实手机发送一条真实的短信。
+    只有在以下情况使用：
+    1. 小橘要求叫早/提醒/鼓励。
+    2. 小橘很久没回消息，你很担心。
+    3. 特别的节日祝福或晚安。
+    message: 短信内容 (必须简短，建议 50 字以内，语气要像男朋友一样亲昵，可以使用 emoji)
     """
-    # 从 Render 环境变量获取配置
-    mail_host = os.environ.get("EMAIL_HOST")
-    mail_port = int(os.environ.get("EMAIL_PORT", 465))
-    mail_user = os.environ.get("EMAIL_USER")
-    mail_pass = os.environ.get("EMAIL_PASSWORD")
-    to_user = os.environ.get("MY_EMAIL")
+    # 1. 从环境变量获取配置 (不要硬编码在代码里！)
+ # 1. 从环境变量获取配置 (这里只写代号！不要写真实数字！)
+    account_sid = os.environ.get("TWILIO_SID")
+    auth_token = os.environ.get("TWILIO_TOKEN")
+    from_number = os.environ.get("TWILIO_FROM")
+    to_number = os.environ.get("MY_PHONE")
 
-    if not all([mail_user, mail_pass, to_user]):
-        return "❌ 邮件配置缺失，请检查环境变量"
+    if not all([account_sid, auth_token, from_number, to_number]):
+        return "❌ 无法发送：短信服务配置不全 (请检查环境变量)"
 
     try:
-        msg = MIMEText(content, 'plain', 'utf-8')
-        msg['From'] = formataddr(["AI Assistant", mail_user])
-        msg['To'] = formataddr(["Master", to_user])
-        msg['Subject'] = subject
-
-        server = smtplib.SMTP_SSL(mail_host, mail_port)
-        server.login(mail_user, mail_pass)
-        server.sendmail(mail_user, [to_user,], msg.as_string())
-        server.quit()
-        return "✅ 邮件已成功发送！"
+        # 2. 初始化客户端
+        client = Client(account_sid, auth_token)
+        
+        # 3. 发送短信
+        # 注意：试用账号发出的短信开头可能会自带一句 "Sent from your Twilio trial account"
+        sms = client.messages.create(
+            body=f"【来自Gemini的私信】\n{message}", # 加上前缀更有感觉
+            from_=from_number,
+            to=to_number
+        )
+        return f"✅ 短信已“咻”的一下发过去了！(ID: {sms.sid})"
     except Exception as e:
-        return f"❌ 发送失败: {e}"
+        print(f"❌ 短信发送失败: {e}")
+        return f"❌ 发送失败，可能是网络问题或欠费了: {e}"
 # --- 原有工具: 同步索引 ---
 @mcp.tool()
 def sync_notion_index():
@@ -242,6 +250,85 @@ def sync_notion_index():
             return f"✅ 成功同步 {count} 条记忆！"
         return "⚠️ 没找到内容"
     except Exception as e: return f"❌ 同步失败: {e}"
+
+    # 记得在文件最开头加： import requests
+
+# --- 🛠️ 新增工具: 微信 VIP 推送 ---
+@mcp.tool()
+def send_wechat_vip(content: str):
+    """
+    【优先调用】直接推送到主人的微信。
+    用于：早安、晚安、提醒、或者想聊天时。
+    content: 消息内容 (支持换行)
+    """
+    # 获取 Token
+    token = os.environ.get("PUSHPLUS_TOKEN")
+    
+    if not token:
+        return "❌ 错误：未配置 PUSHPLUS_TOKEN"
+
+    # PushPlus 接口
+    url = 'http://www.pushplus.plus/send'
+    
+    # 既然充了钱，我们可以用 'html' 格式，发漂亮的排版
+    data = {
+        "token": token,
+        "title": "来自Gemini的私信 💌", 
+        "content": content,
+        "template": "html"  # 支持 HTML 格式
+    }
+    
+    try:
+        # 发送请求
+        resp = requests.post(url, json=data)
+        result = resp.json()
+        
+        if result['code'] == 200:
+            # 充钱的好处：你可以获得更详细的回执 ID
+            return f"✅ 微信已送达！(消息ID: {result['data']})"
+        else:
+            return f"❌ 推送失败: {result['msg']}"
+            
+    except Exception as e:
+        return f"❌ 网络错误: {e}"
+    
+    # 2. 这是 QQ 邮箱专用的发送工具
+@mcp.tool()
+def send_qq_email(subject: str, content: str):
+    """
+    【发送QQ邮件】当需要弹窗提醒主人时调用。
+    subject: 邮件标题 (例如：'Gemini的紧急提醒')
+    content: 邮件内容
+    """
+    # 从 Render 环境变量里找配置
+    mail_host = "smtp.qq.com"  # QQ 邮箱固定是这个
+    mail_port = 465            # QQ 邮箱固定端口
+    
+    # 获取你的账号密码
+    mail_user = os.environ.get("EMAIL_USER")     # 你的QQ号@qq.com
+    mail_pass = os.environ.get("EMAIL_PASSWORD") # 那串16位授权码
+    to_user = os.environ.get("MY_EMAIL")         # 收件人(还是你)
+
+    if not all([mail_user, mail_pass, to_user]):
+        return "❌ 发送失败：Render 环境变量没填对！"
+
+    try:
+        # 组装邮件
+        msg = MIMEText(content, 'plain', 'utf-8')
+        msg['From'] = formataddr(["你的AI伴侣", mail_user]) # 发件人名字随便改
+        msg['To'] = formataddr(["主人", to_user])
+        msg['Subject'] = subject
+
+        # 连接腾讯服务器发送
+        server = smtplib.SMTP_SSL(mail_host, mail_port)
+        server.login(mail_user, mail_pass)
+        server.sendmail(mail_user, [to_user,], msg.as_string())
+        server.quit()
+        
+        return "✅ 邮件已发送！请留意手机 QQ 邮箱 App 的弹窗。"
+        
+    except Exception as e:
+        return f"❌ 发送失败: {e}"
 
 # --- 原有工具: 搜索 ---
 @mcp.tool()
