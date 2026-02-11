@@ -497,13 +497,14 @@ def start_autonomous_life():
 # 5. 🚀 启动入口
 # ==========================================
 
-# 🚑 救火中间件：处理 GPS 和 健康检查，但绝对不修改 Host 头
+# 🚑 救火中间件：既要骗过服务器(Host)，又要保留连接(Headers)
 class HostFixMiddleware:
     def __init__(self, app: ASGIApp):
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
-        # 1. 拦截安卓手机自动发来的 GPS 请求 (/api/gps)
+        # 1. 【新增】拦截安卓手机自动发来的 GPS 请求 (/api/gps)
+        # 这一段必须保留异步线程逻辑，否则会卡死 SSE
         if scope["type"] == "http" and scope["path"] == "/api/gps" and scope["method"] == "POST":
             try:
                 body = b""
@@ -518,8 +519,8 @@ class HostFixMiddleware:
                 remark = data.get("remark", "自动更新")
                 
                 print(f"🛰️ 收到安卓自动定位: {address}")
-
-                # 🔥 启动后台线程写入，不卡死主程序
+                
+                # 🔥【后台写入】防止卡死
                 def _async_write_task():
                     _write_to_notion(
                         title=f"📍 抵达：{address}", 
@@ -538,15 +539,31 @@ class HostFixMiddleware:
                 await send({"type": "http.response.body", "body": b"Error"})
                 return
 
-        # 2. 给 Render 的健康检查直接放行
-        if scope["type"] == "http" and scope["path"] in ["/", "/health"]:
-            await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/plain")]})
-            await send({"type": "http.response.body", "body": b"OK"})
-            return
+        if scope["type"] == "http":
+            # 2. 给 Render 的健康检查直接放行
+            if scope.get("path") in ["/", "/health"]:
+                await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/plain")]})
+                await send({"type": "http.response.body", "body": b"OK"})
+                return
 
-        # 🔥【关键修复】：直接放行，绝对不要修改 headers！
-        # 既然我们在 uvicorn.run 里开了 proxy_headers=True，
-        # 就应该信任 Render 传来的原始 Host，否则 App 会收到错误的连接地址 (localhost)。
+            # 3. 【恢复】精细化修改 Host (解决 421 错误)
+            # 看来 FastMCP 在 Render 上必须认为自己是 localhost 才能工作
+            headers = scope.get("headers", [])
+            new_headers = []
+            host_replaced = False
+            
+            for key, value in headers:
+                if key == b"host":
+                    new_headers.append((b"host", b"localhost:8000")) # 强制伪装
+                    host_replaced = True
+                else:
+                    new_headers.append((key, value))
+            
+            if not host_replaced:
+                new_headers.append((b"host", b"localhost:8000"))
+            
+            scope["headers"] = new_headers
+
         await self.app(scope, receive, send)
 if __name__ == "__main__":
     start_autonomous_life()
