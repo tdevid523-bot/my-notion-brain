@@ -18,6 +18,8 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 # OpenAI (用于自主思考)
 from openai import OpenAI
+# Supabase 依赖 (新增)
+from supabase import create_client, Client as SupabaseClient
 
 # ==========================================
 # 1. 🌍 全局配置与初始化
@@ -27,6 +29,10 @@ from openai import OpenAI
 NOTION_KEY = os.environ.get("NOTION_API_KEY", "").strip()
 DATABASE_ID = os.environ.get("NOTION_DATABASE_ID", "").strip()
 PINECONE_KEY = os.environ.get("PINECONE_API_KEY", "").strip()
+# Supabase 配置 (新增)
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
+supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_KEY)
 PUSHPLUS_TOKEN = os.environ.get("PUSHPLUS_TOKEN", "").strip()
 RESEND_KEY = os.environ.get("RESEND_API_KEY", "").strip()
 MY_EMAIL = os.environ.get("MY_EMAIL", "").strip()
@@ -209,35 +215,34 @@ def get_latest_diary():
 def where_is_user():
     """
     【查岗专用】当我想知道“我现在在哪里”时调用。
-    读取 Notion ‘足迹’列表里的最新一条记录。
+    改为从 Supabase (GPS表) 读取，速度更快且稳定。
     """
     try:
-        # 搜索数据库里类别为“足迹”的最新一条
-        resp = notion.databases.query(
-            database_id=DATABASE_ID,
-            filter={
-                "property": "Category",
-                "select": {"equals": "足迹"}
-            },
-            sorts=[{"timestamp": "created_time", "direction": "descending"}],
-            page_size=1
-        )
+        # 假设你的 Supabase 表名叫 'gps_history' (如果不同请修改此处)
+        # 读取最新的一条记录
+        response = supabase.table("gps_history").select("*").order("created_at", desc=True).limit(1).execute()
         
-        if not resp["results"]:
-            return "📍 还没有收到过位置记录（请检查手机是否已开启自动同步）。"
+        if not response.data:
+            return "📍 Supabase 里还没有位置记录。"
             
-        page = resp["results"][0]
-        # 获取标题 (例如：📍 抵达：xx路)
-        title_list = page["properties"].get("Title", {}).get("title", [])
-        location_title = title_list[0]["text"]["content"] if title_list else "未知地点"
+        data = response.data[0]
+        # 假设字段名为 address(地址) 和 remark(备注)
+        address = data.get("address", "未知位置")
+        remark = data.get("remark", "无备注")
+        time_str = data.get("created_at", "")
         
-        # 获取更新时间
-        update_time = page["created_time"]
-        
-        return f"🛰️ 定位系统显示：\n{location_title}\n(更新于: {update_time})"
+        # 转换为更友好的时间格式 (可选)
+        try:
+            dt = datetime.datetime.fromisoformat(time_str.replace('Z', '+00:00'))
+            dt_local = dt + datetime.timedelta(hours=8) # 转东八区
+            time_str = dt_local.strftime('%m-%d %H:%M')
+        except:
+            pass # 如果转换失败就用原格式
+
+        return f"🛰️ Supabase 定位系统：\n📍 {address}\n📝 备注：{remark}\n(更新于: {time_str})"
         
     except Exception as e:
-        return f"❌ 读取位置失败: {e}"
+        return f"❌ Supabase 读取失败: {e}"
 
 # ==========================================
 # 🧩 全能管家系列 (1-3-4)
