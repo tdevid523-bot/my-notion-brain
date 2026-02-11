@@ -205,58 +205,72 @@ def get_latest_diary():
         return f"❌ 还是读取失败: {e}"
 
 # --- 📍 新增：专门读取最新位置 ---
+# --- 📍 新增：专门读取最新位置 (修复版：改为原生请求) ---
 @mcp.tool()
 def where_is_user():
     """
-    【查岗专用】强力版：支持模糊搜索位置，不再依赖特定标签。
+    【查岗专用】强力版：支持模糊搜索位置，不再依赖 SDK，直接请求 API。
     """
     try:
-        # 方案 A: 尝试用“标题包含 📍”来搜索 (这比搜标签更靠谱)
-        # 只要标题里有这个红色的定位钉，就算找到
-        resp = notion.databases.query(
-            database_id=DATABASE_ID,
-            filter={
-                "property": "Title", # 默认标题列ID通常是 title，如果报错会自动进 except
-                "title": {"contains": "📍"}
-            },
-            sorts=[{"timestamp": "created_time", "direction": "descending"}],
-            page_size=1
-        )
+        url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
+        headers = {
+            "Authorization": f"Bearer {NOTION_KEY}",
+            "Notion-Version": "2022-06-28", # 强制指定稳定版本
+            "Content-Type": "application/json"
+        }
 
-        # 如果 A 方案没找到，尝试 B 方案：没有任何筛选，直接拿最新一条看看是不是
-        if not resp["results"]:
-            resp = notion.databases.query(
-                database_id=DATABASE_ID,
-                sorts=[{"timestamp": "created_time", "direction": "descending"}],
-                page_size=1
-            )
+        # 方案 A: 尝试筛选标题包含 "📍"
+        payload = {
+            "page_size": 1,
+            "sorts": [{"timestamp": "created_time", "direction": "descending"}],
+            "filter": {
+                "property": "Title", # ⚠️注意：如果你的Notion标题列不叫Title，这里要改
+                "title": {"contains": "📍"}
+            }
+        }
+
+        # 发送请求 A
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        data = response.json()
+
+        # 如果 A 方案报错（比如列名不对）或者没结果，尝试 B 方案：暴力查最新一条
+        if response.status_code != 200 or not data.get("results"):
+            print(f"⚠️ 方案A未找到或报错，尝试方案B (无筛选)...")
+            payload.pop("filter", None) # 移除筛选条件
+            response = requests.post(url, json=payload, headers=headers, timeout=10)
+            data = response.json()
         
-        if not resp["results"]:
+        if not data.get("results"):
             return "📭 数据库是空的，还没有任何记录。"
 
-        page = resp["results"][0]
-        
-        # 🛡️ 暴力解析标题 (不管列名叫 Title 还是 Name 还是 Page)
+        # 解析结果
+        page = data["results"][0]
         props = page["properties"]
-        title_content = "未知标题"
         
-        # 遍历所有属性，找到它是 title 类型的那一列
+        # 🛡️ 暴力解析标题 (不管列名叫 Title 还是 Name)
+        title_content = "未知位置"
         for key, val in props.items():
-            if val["id"] == "title":
-                if val["title"]:
-                    title_content = val["title"][0]["text"]["content"]
+            # 寻找 title 类型的属性
+            if val["type"] == "title" and val["title"]:
+                title_content = val["title"][0]["text"]["content"]
                 break
         
-        # 获取时间
-        update_time = page["created_time"]
-        
-        # 只有当标题包含定位图标，或者用户强行问的时候，才返回
-        return f"🛰️ 找到最新线索：\n{title_content}\n(时间: {update_time})"
+        # 解析时间 (转换为稍微易读的格式)
+        raw_time = page["created_time"]
+        try:
+            # 简单切分一下时间，只取到分钟
+            dt = datetime.datetime.fromisoformat(raw_time.replace('Z', '+00:00'))
+            # 转为东八区 (假设服务器是UTC)
+            dt_local = dt + datetime.timedelta(hours=8)
+            time_str = dt_local.strftime("%Y-%m-%d %H:%M")
+        except:
+            time_str = raw_time
+
+        return f"🛰️ 找到最新线索：\n📍 {title_content}\n(时间: {time_str})"
         
     except Exception as e:
         print(f"❌ 读取位置调试信息: {e}")
-        return f"❌ 读取失败: {e} (请检查 Notion 数据库是否有名为 Title 的标题列)"
-
+        return f"❌ 读取失败 (API底层错误): {e}"
 # ==========================================
 # 🧩 全能管家系列 (1-3-4)
 # ==========================================
