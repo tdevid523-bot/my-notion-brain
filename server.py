@@ -518,5 +518,16 @@ if __name__ == "__main__":
     start_autonomous_life()
     port = int(os.environ.get("PORT", 10000))
     app = HostFixMiddleware(mcp.sse_app())
-    print(f"🚀 Notion Brain V3.3 (Supabase Clean) running on port {port}...")
-    uvicorn.run(app, host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")
+    print(f"🚀 Notion Brain V3.3 running on port {port}...")
+    
+    # ✅ 修改：增加 timeout_keep_alive 时间，防止负载均衡器切断连接
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=port, 
+        proxy_headers=True, 
+        forwarded_allow_ips="*",
+        timeout_keep_alive=300,  # 保持连接 300秒 (5分钟)
+        timeout_notify=30,       # 响应超时缓冲
+        workers=1                # MCP 最好单进程运行，防止内存分裂
+    )
