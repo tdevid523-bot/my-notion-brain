@@ -319,39 +319,85 @@ def search_memory_semantic(query: str):
         return ans
             
     except Exception as e: return f"❌ 搜索失败: {e}"
-    
+
 @mcp.tool()
 def sync_memory_index():
     """
-    【记忆整理】
-    把 Supabase 里的所有记忆同步到 Pinecone 向量库，
-    让 AI 可以通过模糊搜索回想起以前的事。
+    【记忆整理 - 修复版】
+    把 Supabase 里的记忆同步到 Pinecone。
+    已增加防报错机制：自动将数字ID转为字符串，自动填充空数据。
     """
     try:
-        print("⚡️ 开始从 Supabase 同步记忆...")
-        # 读取所有记忆
-        response = supabase.table("memories").select("*").execute()
+        print("⚡️ 开始同步记忆 (Supabase -> Pinecone)...")
+        
+        # 1. 从 Supabase 读取所有记忆
+        # 强制只读 id, title, content, created_at, mood 这几列，防止读到奇怪的列
+        response = supabase.table("memories").select("id, title, content, created_at, mood").execute()
         rows = response.data
         
-        if not rows: return "⚠️ 数据库是空的，没什么可同步的。"
+        if not rows: 
+            return "⚠️ Supabase 数据库是空的，没什么可同步的。"
 
         vectors = []
-        for row in rows:
-            # 组合文本用于向量化
-            text_to_embed = f"标题: {row['title']}\n内容: {row['content']}\n心情: {row.get('mood','')}"
-            # 生成向量
-            emb = list(model.embed([text_to_embed]))[0].tolist()
-            # 存入 Pinecone (用 Supabase 的 ID 作为向量 ID)
-            vectors.append((str(row['id']), emb, {"text": row['content'], "title": row['title'], "date": row['created_at']}))
+        skipped_count = 0
         
-        # 批量写入
-        if vectors:
-            index.upsert(vectors=vectors)
-            return f"✅ 成功同步 {len(vectors)} 条记忆到大脑深处！"
-        
-        return "✅ 同步完成"
-    except Exception as e: return f"❌ 同步失败: {e}"
+        print(f"📦 正在处理 {len(rows)} 条记忆...")
 
+        for row in rows:
+            try:
+                # --- A. 数据清洗 (最关键的一步) ---
+                # Pinecone 痛恨 None，所以必须用 'or ""' 把空值变成空字符串
+                r_id = str(row.get('id', '')) # 强制转字符串
+                r_title = row.get('title') or "无题"
+                r_content = row.get('content') or ""
+                r_mood = row.get('mood') or "平静"
+                r_date = str(row.get('created_at', ''))
+
+                # 如果内容是空的，跳过不存
+                if not r_content:
+                    skipped_count += 1
+                    continue
+
+                # --- B. 向量化 ---
+                # 把标题、内容、心情组合在一起变成向量
+                text_to_embed = f"标题: {r_title}\n内容: {r_content}\n心情: {r_mood}"
+                emb = list(model.embed([text_to_embed]))[0].tolist()
+
+                # --- C. 准备写入 Pinecone ---
+                # Metadata 里的值必须全部是字符串或数字，不能有 None
+                metadata = {
+                    "text": r_content,
+                    "title": r_title,
+                    "date": r_date,
+                    "mood": r_mood
+                }
+                
+                vectors.append((r_id, emb, metadata))
+                
+            except Exception as inner_e:
+                print(f"⚠️ 跳过一条坏数据 (ID: {row.get('id')}): {inner_e}")
+                skipped_count += 1
+                continue
+        
+        # --- D. 批量上传 ---
+        if vectors:
+            # 每次最多传 100 条 (防止数据量太大撑爆请求)
+            batch_size = 100
+            for i in range(0, len(vectors), batch_size):
+                batch = vectors[i:i + batch_size]
+                index.upsert(vectors=batch)
+                print(f"✅ 已同步批次 {i} - {i+len(batch)}")
+                
+            return f"✅ 同步成功！共存入 {len(vectors)} 条记忆 (跳过 {skipped_count} 条无效数据)。"
+        
+        return "⚠️ 没有有效数据可同步。"
+
+    except Exception as e:
+        # 打印详细错误方便调试
+        import traceback
+        traceback.print_exc()
+        return f"❌ 同步彻底失败: {e}"
+    
 @mcp.tool()
 def send_wechat_vip(content: str):
     """【微信推送】"""
