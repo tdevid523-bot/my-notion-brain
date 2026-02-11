@@ -53,20 +53,30 @@ mcp = FastMCP("Notion Brain V3")
 
 def _gps_to_address(lat, lon):
     """
-    把经纬度变成中文地址
-    使用 OpenStreetMap 免费接口
+    把经纬度变成中文地址 (修复版)
+    增加超时时间 + 伪装浏览器头，解决解析失败只显示数字的问题
     """
     try:
-        headers = {'User-Agent': 'MyNotionBrain/1.0'}
-        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=18&addressdetails=1&accept-language=zh-CN"
+        # 1. 伪装成浏览器，避免被拦截
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'zh-CN,zh;q=0.9'
+        }
         
-        resp = requests.get(url, headers=headers, timeout=3)
+        # 2. 构造请求
+        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=18&addressdetails=1"
+        
+        # 3. 核心修改：timeout 从 3秒 改为 10秒 (国内访问国外地图接口慢，很容易超时)
+        resp = requests.get(url, headers=headers, timeout=10)
+        
         if resp.status_code == 200:
             data = resp.json()
-            return data.get("display_name", f"未知荒野 ({lat},{lon})")
+            return data.get("display_name", f"未知位置 ({lat},{lon})")
+            
     except Exception as e:
         print(f"❌ 地图解析失败: {e}")
     
+    # 如果还是失败，保留坐标方便排查
     return f"坐标点: {lat}, {lon}"
 
 def _push_wechat(content: str, title: str = "来自Gemini的私信 💌") -> str:
