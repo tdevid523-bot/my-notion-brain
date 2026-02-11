@@ -497,16 +497,15 @@ def start_autonomous_life():
 # 5. 🚀 启动入口
 # ==========================================
 
-# 🚑 救火中间件：既要骗过服务器(Host)，又要保留连接(Headers)
+# 🚑 救火中间件：处理 GPS 和 健康检查，但绝对不修改 Host 头
 class HostFixMiddleware:
     def __init__(self, app: ASGIApp):
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
-        # 1. 【新增】拦截安卓手机自动发来的 GPS 请求 (/api/gps)
+        # 1. 拦截安卓手机自动发来的 GPS 请求 (/api/gps)
         if scope["type"] == "http" and scope["path"] == "/api/gps" and scope["method"] == "POST":
             try:
-                # 读取请求体 (ASGI 标准读取方式)
                 body = b""
                 more_body = True
                 while more_body:
@@ -514,14 +513,13 @@ class HostFixMiddleware:
                     body += message.get("body", b"")
                     more_body = message.get("more_body", False)
                 
-                # 解析安卓传来的 JSON 数据
                 data = json.loads(body.decode("utf-8"))
                 address = data.get("address", "未知坐标")
                 remark = data.get("remark", "自动更新")
                 
                 print(f"🛰️ 收到安卓自动定位: {address}")
-                
-                # 🔥【核心修复】开启后台线程写入 Notion，防止卡死主线程
+
+                # 🔥 启动后台线程写入，不卡死主程序
                 def _async_write_task():
                     _write_to_notion(
                         title=f"📍 抵达：{address}", 
@@ -529,47 +527,27 @@ class HostFixMiddleware:
                         category="足迹", 
                         extra_emoji="🛰️"
                     )
-                # 启动守护线程，主程序不等待它完成
                 threading.Thread(target=_async_write_task, daemon=True).start()
                 
-                # ⚡️ 立即返回成功信号给手机，保持连接畅通
                 await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
                 await send({"type": "http.response.body", "body": json.dumps({"status": "ok"}).encode("utf-8")})
                 return
             except Exception as e:
                 print(f"❌ GPS接收失败: {e}")
-                # 即使出错也要尽快返回，防止卡死
                 await send({"type": "http.response.start", "status": 500, "headers": []})
                 await send({"type": "http.response.body", "body": b"Error"})
                 return
 
-        if scope["type"] == "http":
-            # 2. 给 Render 的健康检查直接放行，不进入 App 逻辑
-            if scope.get("path") in ["/", "/health"]:
-                await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/plain")]})
-                await send({"type": "http.response.body", "body": b"OK"})
-                return
+        # 2. 给 Render 的健康检查直接放行
+        if scope["type"] == "http" and scope["path"] in ["/", "/health"]:
+            await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/plain")]})
+            await send({"type": "http.response.body", "body": b"OK"})
+            return
 
-            # 3. 精细化修改 Host，保留其他所有 Header (防止 SSE 断连)
-            # 不要用 dict() 转换，否则会丢失重复的 key 或顺序
-            headers = scope.get("headers", [])
-            new_headers = []
-            host_replaced = False
-            
-            for key, value in headers:
-                if key == b"host":
-                    new_headers.append((b"host", b"localhost:8000")) # 伪装成 localhost
-                    host_replaced = True
-                else:
-                    new_headers.append((key, value)) # 原样保留其他头
-            
-            if not host_replaced:
-                new_headers.append((b"host", b"localhost:8000"))
-            
-            scope["headers"] = new_headers
-
+        # 🔥【关键修复】：直接放行，绝对不要修改 headers！
+        # 既然我们在 uvicorn.run 里开了 proxy_headers=True，
+        # 就应该信任 Render 传来的原始 Host，否则 App 会收到错误的连接地址 (localhost)。
         await self.app(scope, receive, send)
-
 if __name__ == "__main__":
     start_autonomous_life()
     port = int(os.environ.get("PORT", 10000))
