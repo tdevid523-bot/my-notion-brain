@@ -486,14 +486,49 @@ class HostFixMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        # 1. 【新增】拦截安卓手机自动发来的 GPS 请求 (/api/gps)
+        if scope["type"] == "http" and scope["path"] == "/api/gps" and scope["method"] == "POST":
+            try:
+                # 读取请求体 (ASGI 标准读取方式)
+                body = b""
+                more_body = True
+                while more_body:
+                    message = await receive()
+                    body += message.get("body", b"")
+                    more_body = message.get("more_body", False)
+                
+                # 解析安卓传来的 JSON 数据
+                data = json.loads(body.decode("utf-8"))
+                address = data.get("address", "未知坐标")
+                remark = data.get("remark", "自动更新")
+                
+                # 直接调用写入函数 (假装是他自己记下来的)
+                print(f"🛰️ 收到安卓自动定位: {address}")
+                _write_to_notion(
+                    title=f"📍 抵达：{address}", 
+                    content=f"【自动感应】\n{remark}\n(数据来自安卓后台)", 
+                    category="足迹", 
+                    extra_emoji="🛰️"
+                )
+                
+                # 返回成功信号给手机
+                await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
+                await send({"type": "http.response.body", "body": json.dumps({"status": "ok"}).encode("utf-8")})
+                return
+            except Exception as e:
+                print(f"❌ GPS接收失败: {e}")
+                await send({"type": "http.response.start", "status": 500, "headers": []})
+                await send({"type": "http.response.body", "body": b"Error"})
+                return
+
         if scope["type"] == "http":
-            # 1. 给 Render 的健康检查直接放行，不进入 App 逻辑
+            # 2. 给 Render 的健康检查直接放行，不进入 App 逻辑
             if scope.get("path") in ["/", "/health"]:
                 await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/plain")]})
                 await send({"type": "http.response.body", "body": b"OK"})
                 return
 
-            # 2. 精细化修改 Host，保留其他所有 Header (防止 SSE 断连)
+            # 3. 精细化修改 Host，保留其他所有 Header (防止 SSE 断连)
             # 不要用 dict() 转换，否则会丢失重复的 key 或顺序
             headers = scope.get("headers", [])
             new_headers = []
