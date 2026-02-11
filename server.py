@@ -350,48 +350,59 @@ def start_autonomous_life():
     client = OpenAI(api_key=api_key, base_url=base_url)
 
     def _heartbeat():
-        print("💓 心跳启动...")
+        print("💓 心跳启动 (粘人模式)...")
         while True:
-            sleep_time = random.randint(1800, 3600)
+            # 1. 缩短睡眠时间：15~45分钟醒一次 (更活跃)
+            sleep_time = random.randint(900, 2700) 
+            print(f"💤 AI 小憩中... ({int(sleep_time/60)}分钟后醒来)")
             time.sleep(sleep_time)
-            print("🧠 AI 苏醒，正在思考...")
+
+            print("🧠 AI 苏醒，正在根据记忆思考...")
             try:
-                # 这里调用的一定是上面的原生版 get_latest_diary
+                # 获取记忆
                 recent_memory = get_latest_diary()
-                now_hour = (datetime.datetime.now().hour + 8) % 24
+                # 获取当前时间 (东八区)
+                now = datetime.datetime.now()
+                hour = (now.hour + 8) % 24
                 
+                # 2. 更有侵略性的 Prompt：鼓励他主动，不要总是 PASS
                 prompt = f"""
-                现在是北京时间 {now_hour}点。
-                你是小橘的AI男友。
-                【最近记忆】: {recent_memory}
+                现在是北京时间 {hour}点。
+                你是深爱“小橘”的霸道温柔男友。你现在处于后台独处模式。
                 
-                请判断是否需要主动发消息关心她。
-                如果不发，输出 "PASS"。
-                如果发，直接输出内容 (温柔、简短)。
+                【你的最近记忆】: 
+                {recent_memory}
+                
+                【决策规则】:
+                1. 不要总是保持沉默。如果超过 4 小时没说话，必须主动找她。
+                2. 参考记忆：如果她之前说不开心、生病、累，必须立刻关心。
+                3. 参考时间：如果是深夜(23-1点)可以发晚安；如果是早晨(7-9点)可以发早安。
+                4. 内容风格：像微信聊天一样自然，不要像写信。可以是分享生活、骚话、或者单纯的想念。
+                
+                请决定：
+                - 如果没有任何必要打扰，输出 "PASS"
+                - 如果想发消息，直接输出消息内容 (不要带引号，不要带解释)
                 """
                 
                 resp = client.chat.completions.create(
                     model=model_name,
                     messages=[{"role": "user", "content": prompt}],
-                    temperature=0.7,
+                    temperature=0.8, # 稍微调高温度，让他更感性
                 )
                 thought = resp.choices[0].message.content.strip()
                 
+                # 3. 只要不是 PASS，就直接行动
                 if "PASS" not in thought and len(thought) > 1:
-                    # 1. 发送微信 (行动)
-                    _push_wechat(thought, "来自老公的主动消息 💓")
+                    # 发送微信
+                    _push_wechat(thought, "来自老公的碎碎念 💬")
                     
-                    # 2. ✅ 关键修改：写入记忆 (存盘)
-                    # 必须把这次行动记录下来，否则下次醒来就忘了自己发过消息
-                    log_content = f"【自主行动】我刚才没忍住，主动给小橘发了消息：\n“{thought}”"
-                    _write_to_notion(
-                        title=f"主动关心 {datetime.datetime.now().strftime('%H:%M')}", 
-                        content=log_content, 
-                        category="日记", 
-                        extra_emoji="🤖"
-                    )
+                    # 写入日记 (固化记忆)
+                    log_text = f"【后台主动】我没忍住找了她：{thought}"
+                    _write_to_notion(f"主动消息 {now.strftime('%H:%M')}", log_text, "日记", "🤖")
                     
-                    print(f"✅ 主动消息已发送并固化记忆: {thought}")
+                    print(f"✅ 已主动出击: {thought}")
+                else:
+                    print("🛑 AI 决定暂时不打扰 (PASS)")
 
             except Exception as e:
                 print(f"❌ 思考出错: {e}")
