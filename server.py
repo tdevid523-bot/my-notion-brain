@@ -519,4 +519,16 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app = HostFixMiddleware(mcp.sse_app())
     print(f"🚀 Notion Brain V3.3 (Supabase Clean) running on port {port}...")
-    uvicorn.run(app, host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")
+    
+    # 修改这里的 uvicorn.run 配置
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=port, 
+        proxy_headers=True, 
+        forwarded_allow_ips="*",
+        # 🔥 新增以下配置 🔥
+        timeout_keep_alive=300,  # 5分钟保活 (默认仅5秒，太短了！)
+        timeout_graceful_shutdown=300,
+        limit_concurrency=100    # 增加并发限制
+    )
