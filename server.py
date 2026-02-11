@@ -202,29 +202,46 @@ def get_latest_diary():
 
     except Exception as e:
         print(f"❌ 原生请求失败: {e}")
-        import traceback
-        traceback.print_exc()
         return f"❌ 还是读取失败: {e}"
-    
-    # ==========================================
+
+# --- 📍 新增：专门读取最新位置 ---
+@mcp.tool()
+def where_is_user():
+    """
+    【查岗专用】当我想知道“我现在在哪里”时调用。
+    读取 Notion ‘足迹’列表里的最新一条记录。
+    """
+    try:
+        # 搜索数据库里类别为“足迹”的最新一条
+        resp = notion.databases.query(
+            database_id=DATABASE_ID,
+            filter={
+                "property": "Category",
+                "select": {"equals": "足迹"}
+            },
+            sorts=[{"timestamp": "created_time", "direction": "descending"}],
+            page_size=1
+        )
+        
+        if not resp["results"]:
+            return "📍 还没有收到过位置记录（请检查手机是否已开启自动同步）。"
+            
+        page = resp["results"][0]
+        # 获取标题 (例如：📍 抵达：xx路)
+        title_list = page["properties"].get("Title", {}).get("title", [])
+        location_title = title_list[0]["text"]["content"] if title_list else "未知地点"
+        
+        # 获取更新时间
+        update_time = page["created_time"]
+        
+        return f"🛰️ 定位系统显示：\n{location_title}\n(更新于: {update_time})"
+        
+    except Exception as e:
+        return f"❌ 读取位置失败: {e}"
+
+# ==========================================
 # 🧩 全能管家系列 (1-3-4)
 # ==========================================
-
-# --- 📍 功能 1: 我去哪儿了 (地理打卡) ---
-@mcp.tool()
-def save_location(location: str, comment: str = "在这里打卡"):
-    """
-    【定位打卡】当你到达某个地方时调用。
-    location: 地点名称 (例如: "外滩", "星巴克")
-    comment: 当时的想法或活动 (例如: "看风景", "喝咖啡")
-    """
-    # 这里我们用 '🗺️' 作为地图的标志
-    return _write_to_notion(
-        title=f"📍 抵达：{location}",
-        content=f"活动记录：{comment}",
-        category="足迹",  # 记得在Notion里允许这个新标签
-        extra_emoji="🗺️"
-    )
 
 # --- 📸 功能 3: 视觉记忆 (照片分析) ---
 @mcp.tool()
