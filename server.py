@@ -518,15 +518,5 @@ if __name__ == "__main__":
     start_autonomous_life()
     port = int(os.environ.get("PORT", 10000))
     app = HostFixMiddleware(mcp.sse_app())
-    print(f"🚀 Notion Brain V3.3 running on port {port}...")
-    
-    # ✅ 修改：删除 timeout_notify，保留 timeout_keep_alive
-    uvicorn.run(
-        app, 
-        host="0.0.0.0", 
-        port=port, 
-        proxy_headers=True, 
-        forwarded_allow_ips="*",
-        timeout_keep_alive=300,  # 保持连接 300秒
-        workers=1                # 单进程运行
-    )
+    print(f"🚀 Notion Brain V3.3 (Supabase Clean) running on port {port}...")
+    uvicorn.run(app, host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")
