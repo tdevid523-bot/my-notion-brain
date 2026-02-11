@@ -52,45 +52,22 @@ mcp = FastMCP("Notion Brain V3")
 # ==========================================
 
 def _gps_to_address(lat, lon):
-    """def _gps_to_address(lat, lon):
-    """
-    把经纬度变成中文地址 (高德地图版)
-    """
     try:
-        # 🔴 【重要】请把下面的 xxxxx 换成你刚刚申请的高德 Key
-        amap_key = "435041ed0364264c810784e5468b3329" 
+        # 这里填你的高德Key，保留引号
+        amap_key = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" 
         
-        # 高德接口要求经纬度顺序是: 经度,纬度 (lon, lat)
         url = f"https://restapi.amap.com/v3/geocode/regeo?output=json&location={lon},{lat}&key={amap_key}&radius=1000&extensions=base"
         
         resp = requests.get(url, timeout=5)
         if resp.status_code == 200:
             data = resp.json()
-            # status为1表示成功
             if data.get('status') == '1':
                 return data['regeocode']['formatted_address']
-            else:
-                print(f"⚠️ 高德报错: {data.get('info')}")
                 
     except Exception as e:
-        print(f"❌ 地图解析失败: {e}")
+        print(f"GPS_Error: {e}")
     
-    return f"坐标点: {lat}, {lon}"
-    把经纬度变成中文地址
-    使用 OpenStreetMap 免费接口
-    """
-    try:
-        headers = {'User-Agent': 'MyNotionBrain/1.0'}
-        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=18&addressdetails=1&accept-language=zh-CN"
-        
-        resp = requests.get(url, headers=headers, timeout=3)
-        if resp.status_code == 200:
-            data = resp.json()
-            return data.get("display_name", f"未知荒野 ({lat},{lon})")
-    except Exception as e:
-        print(f"❌ 地图解析失败: {e}")
-    
-    return f"坐标点: {lat}, {lon}"
+    return f"Coord: {lat}, {lon}"
 
 def _push_wechat(content: str, title: str = "来自Gemini的私信 💌") -> str:
     """统一的微信推送函数"""
