@@ -54,7 +54,7 @@ mcp = FastMCP("Notion Brain V3")
 def _gps_to_address(lat, lon):
     try:
         # 这里填你的高德Key，保留引号
-        amap_key = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" 
+        amap_key = "435041ed0364264c810784e5468b3329" 
         
         url = f"https://restapi.amap.com/v3/geocode/regeo?output=json&location={lon},{lat}&key={amap_key}&radius=1000&extensions=base"
         
