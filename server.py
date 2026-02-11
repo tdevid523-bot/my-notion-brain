@@ -48,8 +48,6 @@ model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
 # 实例化 MCP 服务
 mcp = FastMCP("Notion Brain V3")
 
-# 全局变量：虚拟信箱
-INBOX = []
 
 # ==========================================
 # 2. 🔧 核心 Helper 函数
@@ -159,83 +157,28 @@ def _write_to_notion(title: str, content: str, category: str, extra_emoji: str =
 def get_latest_diary():
     """
     【每次开聊前自动调用】
-    获取最近一次的日记 (使用原生请求，无视库版本问题)。
+    从 Supabase 极速读取最近一次日记。
     """
-    import json
-    import urllib.request
-    import urllib.error
-
     try:
-        if not DATABASE_ID: return "❌ 错误：未设置 NOTION_DATABASE_ID"
-        
-        # 1. 准备请求头
-        headers = {
-            "Authorization": f"Bearer {NOTION_KEY}",
-            "Notion-Version": "2022-06-28", # 强制指定稳定版本
-            "Content-Type": "application/json"
-        }
+        # 读取 memories 表，分类是"日记"，按时间倒序，只取 1 条
+        response = supabase.table("memories") \
+            .select("*") \
+            .eq("category", "日记") \
+            .order("created_at", desc=True) \
+            .limit(1) \
+            .execute()
 
-        # 2. 步骤一：查找最新日记 (POST /databases/:id/query)
-        query_url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
-        query_payload = {
-            "page_size": 1,
-            "sorts": [{"timestamp": "created_time", "direction": "descending"}],
-            "filter": {
-                "property": "Category",
-                "select": {"equals": "日记"}
-            }
-        }
-        
-        req = urllib.request.Request(query_url, data=json.dumps(query_payload).encode('utf-8'), headers=headers, method="POST")
-        
-        # 这里的 retry 逻辑是你之前写的精华，必须保留
-        try:
-            with urllib.request.urlopen(req) as response:
-                query_data = json.loads(response.read().decode('utf-8'))
-        except urllib.error.HTTPError as e:
-            print(f"⚠️ 筛选查询失败，尝试无筛选查询: {e}")
-            query_payload.pop("filter", None)
-            req = urllib.request.Request(query_url, data=json.dumps(query_payload).encode('utf-8'), headers=headers, method="POST")
-            with urllib.request.urlopen(req) as response:
-                query_data = json.loads(response.read().decode('utf-8'))
-
-        if not query_data.get("results"):
+        if not response.data:
             return "📭 还没有写过日记（数据库为空）。"
 
-        # 3. 步骤二：获取页面内容
-        page_id = query_data["results"][0]["id"]
-        blocks_url = f"https://api.notion.com/v1/blocks/{page_id}/children?page_size=100"
+        data = response.data[0]
+        # 格式化时间
+        date_str = data['created_at'].split('T')[0] 
         
-        req_blocks = urllib.request.Request(blocks_url, headers=headers, method="GET")
-        with urllib.request.urlopen(req_blocks) as response:
-            blocks_data = json.loads(response.read().decode('utf-8'))
-
-        # 4. 步骤三：解析内容
-        content = ""
-        for b in blocks_data.get("results", []):
-            b_type = b.get("type")
-            text_list = []
-            
-            if b_type in b and "rich_text" in b[b_type]:
-                for t in b[b_type]["rich_text"]:
-                    text_list.append(t.get("text", {}).get("content", ""))
-            
-            current_text = "".join(text_list)
-            if not current_text: continue
-            
-            if b_type == "paragraph": content += current_text + "\n"
-            elif b_type and b_type.startswith("heading"): content += f"【{current_text}】\n"
-            elif "list_item" in str(b_type): content += f"• {current_text}\n"
-            elif b_type == "to_do": 
-                checked = "✅" if b["to_do"].get("checked") else "🔲"
-                content += f"{checked} {current_text}\n"
-            else: content += f"{current_text}\n"
-
-        return f"📖 上次记忆回放 (原生API版):\n{content}"
+        return f"📖 上次记忆 ({date_str}):\n【{data['title']}】\n{data['content']}\n(心情: {data.get('mood','平静')})"
 
     except Exception as e:
-        print(f"❌ 原生请求失败: {e}")
-        return f"❌ 还是读取失败: {e}"
+        return f"❌ 读取日记失败: {e}"
 
 # --- 📍 新增：专门读取最新位置 ---
 @mcp.tool()
@@ -278,98 +221,135 @@ def where_is_user():
 # --- 📸 功能 3: 视觉记忆 (照片分析) ---
 @mcp.tool()
 def save_visual_memory(description: str, mood: str = "开心"):
-    """
-    【视觉记忆】当你发照片给我时，通过我的眼睛(Vision模型)看懂照片后调用。
-    description: 对照片的详细描述 (例如: "小橘今天的晚餐是火锅，看起来很辣")
-    mood: 从照片中感受到的情绪
-    """
-    # 这个功能的精髓在于：是你(AI)看懂了照片，然后把文字记下来
-    return _write_to_notion(
-        title=f"📸 视觉回忆：{description[:10]}...", # 标题取前10个字
-        content=f"【画面描述】\n{description}\n\n【此刻氛围】\n{mood}",
-        category="相册",
-        extra_emoji="🖼️"
-    )
+    """【视觉记忆】保存照片描述"""
+    try:
+        supabase.table("memories").insert({
+            "title": f"📸 视觉回忆",
+            "content": description,
+            "category": "相册",
+            "mood": mood
+        }).execute()
+        return "✅ 画面记忆已存储。"
+    except Exception as e: return f"❌ 保存失败: {e}"
 
 # --- 💰 功能 4: 管家模式 (记账) ---
 @mcp.tool()
 def save_expense(item: str, amount: float, type: str = "餐饮"):
-    """
-    【记账助手】当你花了钱告诉我时调用。
-    item: 买了什么 (例如: "奶茶", "打车")
-    amount: 金额 (数字，例如: 28.5)
-    type: 消费类型 (例如: "餐饮", "交通", "购物", "娱乐")
-    """
+    """【记账助手】"""
     try:
-        today = datetime.date.today().isoformat()
-        # 这里需要特殊的写入逻辑，因为要填 'Amount' 字段
-        notion.pages.create(
-            parent={"database_id": DATABASE_ID},
-            properties={
-                "Title": {"title": [{"text": {"content": f"💸 {item}"}}]},
-                "Category": {"select": {"name": "账本"}}, 
-                "Amount": {"number": amount},  # 👈 关键：必须在Notion里提前建好 'Amount' 列
-                "Date": {"date": {"start": today}}
-            },
-            children=[{
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{"type": "text", "text": {"content": f"类型：{type}\n金额：{amount}"}}]
-                }
-            }]
-        )
-        return f"✅ 记账成功！\n💰 项目：{item}\n💸 金额：{amount}\n📝 已计入本月账单。"
-    except Exception as e:
-        return f"❌ 记账失败 (请检查Notion是否有Amount列): {e}"
+        supabase.table("expenses").insert({
+            "item": item,
+            "amount": amount,
+            "type": type,
+            "date": datetime.date.today().isoformat()
+        }).execute()
+        return f"✅ 记账成功！\n💰 {item}: {amount}元 ({type})"
+    except Exception as e: return f"❌ 记账失败: {e}"
 
 # --- 📝 其他工具保持 V3 优化版 ---
+# --- 📝 核心记忆写入工具 (全部改用 Supabase) ---
 
 @mcp.tool()
 def save_daily_diary(summary: str, mood: str = "平静"):
     """【聊天结束时调用】记录日记"""
-    return _write_to_notion(f"日记 {datetime.date.today()} ({mood})", summary, "日记", "📅")
+    try:
+        data = {
+            "title": f"日记 {datetime.date.today()}",
+            "content": summary,
+            "category": "日记",
+            "mood": mood
+        }
+        supabase.table("memories").insert(data).execute()
+        return "✅ 日记已永久刻录在 Supabase 数据库中。"
+    except Exception as e:
+        return f"❌ 日记保存失败: {e}"
 
 @mcp.tool()
 def save_note(title: str, content: str, tag: str = "灵感"):
     """【记录知识时调用】"""
-    return _write_to_notion(title, content, tag)
+    try:
+        supabase.table("memories").insert({
+            "title": title,
+            "content": content,
+            "category": "灵感",
+            "tags": tag
+        }).execute()
+        return f"✅ 灵感已保存: {title}"
+    except Exception as e: return f"❌ 保存失败: {e}"
 
 @mcp.tool()
 def search_memory_semantic(query: str):
-    """【回忆搜索】"""
+    """
+    【回忆搜索】
+    在 Pinecone 大脑皮层中检索，找回 Supabase 里的相关记忆。
+    """
     try:
+        # 1. 把你的问题变成向量
+        # (这里用的是 fastembed，不需要改，它负责把文字变数字)
         vec = list(model.embed([query]))[0].tolist()
+        
+        # 2. 去 Pinecone 搜最像的 3 个片段
         res = index.query(vector=vec, top_k=3, include_metadata=True)
-        ans = "Found:\n"
-        for m in res["matches"]:
-            ans += f"- {m['metadata'].get('text','')} (相似度 {m['score']:.2f})\n"
-        return ans
-    except Exception as e: return f"❌ 搜索失败: {e}"
+        
+        if not res["matches"]:
+            return "🧠 大脑一片空白，没搜到相关记忆。"
 
+        ans = f"🔍 关于 '{query}' 的深层回忆:\n"
+        found_count = 0
+        
+        for m in res["matches"]:
+            score = m['score']
+            # 过滤掉相关性太低的 (比如低于 0.7 的可能就是乱联想)
+            if score < 0.70: continue
+            
+            found_count += 1
+            meta = m['metadata']
+            
+            # 获取我们在 sync_memory_index 里存进去的字段
+            title = meta.get('title', '无题')
+            content = meta.get('text', '')
+            # Supabase 的时间格式可能是 2026-02-11T... 我们只截取前10位日期
+            date = meta.get('date', '未知日期')[:10]
+            
+            ans += f"📅 {date} | 【{title}】 (匹配度 {int(score*100)}%)\n{content}\n---\n"
+            
+        if found_count == 0:
+            return "🤔 好像有点印象，但想不起来具体的了 (相关度太低)。"
+            
+        return ans
+            
+    except Exception as e: return f"❌ 搜索失败: {e}"
+    
 @mcp.tool()
-def sync_notion_index():
-    """手动同步"""
+def sync_memory_index():
+    """
+    【记忆整理】
+    把 Supabase 里的所有记忆同步到 Pinecone 向量库，
+    让 AI 可以通过模糊搜索回想起以前的事。
+    """
     try:
-        print("⚡️ 开始同步...")
-        all_pages = notion.search(filter={"value": "page", "property": "object"})["results"]
+        print("⚡️ 开始从 Supabase 同步记忆...")
+        # 读取所有记忆
+        response = supabase.table("memories").select("*").execute()
+        rows = response.data
+        
+        if not rows: return "⚠️ 数据库是空的，没什么可同步的。"
+
         vectors = []
-        target_id_clean = DATABASE_ID.replace("-", "")
+        for row in rows:
+            # 组合文本用于向量化
+            text_to_embed = f"标题: {row['title']}\n内容: {row['content']}\n心情: {row.get('mood','')}"
+            # 生成向量
+            emb = list(model.embed([text_to_embed]))[0].tolist()
+            # 存入 Pinecone (用 Supabase 的 ID 作为向量 ID)
+            vectors.append((str(row['id']), emb, {"text": row['content'], "title": row['title'], "date": row['created_at']}))
         
-        for p in all_pages:
-            pid = p.get("parent", {}).get("database_id", "")
-            if pid and pid.replace("-", "") == target_id_clean:
-                title = "无题"
-                if "Title" in p["properties"] and p["properties"]["Title"]["title"]:
-                    title = p["properties"]["Title"]["title"][0]["text"]["content"]
-                txt = f"标题: {title}"
-                emb = list(model.embed([txt]))[0].tolist()
-                vectors.append((p["id"], emb, {"text": txt, "title": title}))
-        
+        # 批量写入
         if vectors:
             index.upsert(vectors=vectors)
-            return f"✅ 成功同步 {len(vectors)} 条记忆！"
-        return "⚠️ 没找到内容"
+            return f"✅ 成功同步 {len(vectors)} 条记忆到大脑深处！"
+        
+        return "✅ 同步完成"
     except Exception as e: return f"❌ 同步失败: {e}"
 
 @mcp.tool()
@@ -435,20 +415,6 @@ def add_calendar_event(summary: str, description: str, start_time_iso: str, dura
         res = service.events().insert(calendarId='primary', body=event).execute()
         return f"✅ 日历已添加: {res.get('htmlLink')}"
     except Exception as e: return f"❌ 日历错误: {e}"
-
-@mcp.tool()
-def leave_note_for_user(content: str):
-    """【信箱留言】"""
-    INBOX.append(f"[{datetime.datetime.now().strftime('%m-%d %H:%M')}] {content}")
-    return "✅ 留言已保存"
-
-@mcp.tool()
-def check_inbox():
-    """【检查信箱】"""
-    if not INBOX: return "📭 信箱是空的"
-    msgs = "\n".join(INBOX)
-    INBOX.clear()
-    return f"💌 留言内容:\n{msgs}"
 
 # ==========================================
 # 4. ❤️ 自主生命核心 (后台心跳)
