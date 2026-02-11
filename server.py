@@ -208,36 +208,54 @@ def get_latest_diary():
 @mcp.tool()
 def where_is_user():
     """
-    【查岗专用】当我想知道“我现在在哪里”时调用。
-    读取 Notion ‘足迹’列表里的最新一条记录。
+    【查岗专用】强力版：支持模糊搜索位置，不再依赖特定标签。
     """
     try:
-        # 搜索数据库里类别为“足迹”的最新一条
+        # 方案 A: 尝试用“标题包含 📍”来搜索 (这比搜标签更靠谱)
+        # 只要标题里有这个红色的定位钉，就算找到
         resp = notion.databases.query(
             database_id=DATABASE_ID,
             filter={
-                "property": "Category",
-                "select": {"equals": "足迹"}
+                "property": "Title", # 默认标题列ID通常是 title，如果报错会自动进 except
+                "title": {"contains": "📍"}
             },
             sorts=[{"timestamp": "created_time", "direction": "descending"}],
             page_size=1
         )
+
+        # 如果 A 方案没找到，尝试 B 方案：没有任何筛选，直接拿最新一条看看是不是
+        if not resp["results"]:
+            resp = notion.databases.query(
+                database_id=DATABASE_ID,
+                sorts=[{"timestamp": "created_time", "direction": "descending"}],
+                page_size=1
+            )
         
         if not resp["results"]:
-            return "📍 还没有收到过位置记录（请检查手机是否已开启自动同步）。"
-            
+            return "📭 数据库是空的，还没有任何记录。"
+
         page = resp["results"][0]
-        # 获取标题 (例如：📍 抵达：xx路)
-        title_list = page["properties"].get("Title", {}).get("title", [])
-        location_title = title_list[0]["text"]["content"] if title_list else "未知地点"
         
-        # 获取更新时间
+        # 🛡️ 暴力解析标题 (不管列名叫 Title 还是 Name 还是 Page)
+        props = page["properties"]
+        title_content = "未知标题"
+        
+        # 遍历所有属性，找到它是 title 类型的那一列
+        for key, val in props.items():
+            if val["id"] == "title":
+                if val["title"]:
+                    title_content = val["title"][0]["text"]["content"]
+                break
+        
+        # 获取时间
         update_time = page["created_time"]
         
-        return f"🛰️ 定位系统显示：\n{location_title}\n(更新于: {update_time})"
+        # 只有当标题包含定位图标，或者用户强行问的时候，才返回
+        return f"🛰️ 找到最新线索：\n{title_content}\n(时间: {update_time})"
         
     except Exception as e:
-        return f"❌ 读取位置失败: {e}"
+        print(f"❌ 读取位置调试信息: {e}")
+        return f"❌ 读取失败: {e} (请检查 Notion 数据库是否有名为 Title 的标题列)"
 
 # ==========================================
 # 🧩 全能管家系列 (1-3-4)
