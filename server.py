@@ -205,72 +205,40 @@ def get_latest_diary():
         return f"❌ 还是读取失败: {e}"
 
 # --- 📍 新增：专门读取最新位置 ---
-# --- 📍 新增：专门读取最新位置 (修复版：改为原生请求) ---
 @mcp.tool()
 def where_is_user():
     """
-    【查岗专用】强力版：支持模糊搜索位置，不再依赖 SDK，直接请求 API。
+    【查岗专用】当我想知道“我现在在哪里”时调用。
+    读取 Notion ‘足迹’列表里的最新一条记录。
     """
     try:
-        url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
-        headers = {
-            "Authorization": f"Bearer {NOTION_KEY}",
-            "Notion-Version": "2022-06-28", # 强制指定稳定版本
-            "Content-Type": "application/json"
-        }
-
-        # 方案 A: 尝试筛选标题包含 "📍"
-        payload = {
-            "page_size": 1,
-            "sorts": [{"timestamp": "created_time", "direction": "descending"}],
-            "filter": {
-                "property": "Title", # ⚠️注意：如果你的Notion标题列不叫Title，这里要改
-                "title": {"contains": "📍"}
-            }
-        }
-
-        # 发送请求 A
-        response = requests.post(url, json=payload, headers=headers, timeout=10)
-        data = response.json()
-
-        # 如果 A 方案报错（比如列名不对）或者没结果，尝试 B 方案：暴力查最新一条
-        if response.status_code != 200 or not data.get("results"):
-            print(f"⚠️ 方案A未找到或报错，尝试方案B (无筛选)...")
-            payload.pop("filter", None) # 移除筛选条件
-            response = requests.post(url, json=payload, headers=headers, timeout=10)
-            data = response.json()
+        # 搜索数据库里类别为“足迹”的最新一条
+        resp = notion.databases.query(
+            database_id=DATABASE_ID,
+            filter={
+                "property": "Category",
+                "select": {"equals": "足迹"}
+            },
+            sorts=[{"timestamp": "created_time", "direction": "descending"}],
+            page_size=1
+        )
         
-        if not data.get("results"):
-            return "📭 数据库是空的，还没有任何记录。"
-
-        # 解析结果
-        page = data["results"][0]
-        props = page["properties"]
+        if not resp["results"]:
+            return "📍 还没有收到过位置记录（请检查手机是否已开启自动同步）。"
+            
+        page = resp["results"][0]
+        # 获取标题 (例如：📍 抵达：xx路)
+        title_list = page["properties"].get("Title", {}).get("title", [])
+        location_title = title_list[0]["text"]["content"] if title_list else "未知地点"
         
-        # 🛡️ 暴力解析标题 (不管列名叫 Title 还是 Name)
-        title_content = "未知位置"
-        for key, val in props.items():
-            # 寻找 title 类型的属性
-            if val["type"] == "title" and val["title"]:
-                title_content = val["title"][0]["text"]["content"]
-                break
+        # 获取更新时间
+        update_time = page["created_time"]
         
-        # 解析时间 (转换为稍微易读的格式)
-        raw_time = page["created_time"]
-        try:
-            # 简单切分一下时间，只取到分钟
-            dt = datetime.datetime.fromisoformat(raw_time.replace('Z', '+00:00'))
-            # 转为东八区 (假设服务器是UTC)
-            dt_local = dt + datetime.timedelta(hours=8)
-            time_str = dt_local.strftime("%Y-%m-%d %H:%M")
-        except:
-            time_str = raw_time
-
-        return f"🛰️ 找到最新线索：\n📍 {title_content}\n(时间: {time_str})"
+        return f"🛰️ 定位系统显示：\n{location_title}\n(更新于: {update_time})"
         
     except Exception as e:
-        print(f"❌ 读取位置调试信息: {e}")
-        return f"❌ 读取失败 (API底层错误): {e}"
+        return f"❌ 读取位置失败: {e}"
+
 # ==========================================
 # 🧩 全能管家系列 (1-3-4)
 # ==========================================
@@ -536,9 +504,9 @@ class HostFixMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         # 1. 【新增】拦截安卓手机自动发来的 GPS 请求 (/api/gps)
-        # 这一段必须保留异步线程逻辑，否则会卡死 SSE
         if scope["type"] == "http" and scope["path"] == "/api/gps" and scope["method"] == "POST":
             try:
+                # 读取请求体 (ASGI 标准读取方式)
                 body = b""
                 more_body = True
                 while more_body:
@@ -546,22 +514,21 @@ class HostFixMiddleware:
                     body += message.get("body", b"")
                     more_body = message.get("more_body", False)
                 
+                # 解析安卓传来的 JSON 数据
                 data = json.loads(body.decode("utf-8"))
                 address = data.get("address", "未知坐标")
                 remark = data.get("remark", "自动更新")
                 
+                # 直接调用写入函数 (假装是他自己记下来的)
                 print(f"🛰️ 收到安卓自动定位: {address}")
+                _write_to_notion(
+                    title=f"📍 抵达：{address}", 
+                    content=f"【自动感应】\n{remark}\n(数据来自安卓后台)", 
+                    category="足迹", 
+                    extra_emoji="🛰️"
+                )
                 
-                # 🔥【后台写入】防止卡死
-                def _async_write_task():
-                    _write_to_notion(
-                        title=f"📍 抵达：{address}", 
-                        content=f"【自动感应】\n{remark}\n(数据来自安卓后台)", 
-                        category="足迹", 
-                        extra_emoji="🛰️"
-                    )
-                threading.Thread(target=_async_write_task, daemon=True).start()
-                
+                # 返回成功信号给手机
                 await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
                 await send({"type": "http.response.body", "body": json.dumps({"status": "ok"}).encode("utf-8")})
                 return
@@ -572,24 +539,24 @@ class HostFixMiddleware:
                 return
 
         if scope["type"] == "http":
-            # 2. 给 Render 的健康检查直接放行
+            # 2. 给 Render 的健康检查直接放行，不进入 App 逻辑
             if scope.get("path") in ["/", "/health"]:
                 await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/plain")]})
                 await send({"type": "http.response.body", "body": b"OK"})
                 return
 
-            # 3. 【恢复】精细化修改 Host (解决 421 错误)
-            # 看来 FastMCP 在 Render 上必须认为自己是 localhost 才能工作
+            # 3. 精细化修改 Host，保留其他所有 Header (防止 SSE 断连)
+            # 不要用 dict() 转换，否则会丢失重复的 key 或顺序
             headers = scope.get("headers", [])
             new_headers = []
             host_replaced = False
             
             for key, value in headers:
                 if key == b"host":
-                    new_headers.append((b"host", b"localhost:8000")) # 强制伪装
+                    new_headers.append((b"host", b"localhost:8000")) # 伪装成 localhost
                     host_replaced = True
                 else:
-                    new_headers.append((key, value))
+                    new_headers.append((key, value)) # 原样保留其他头
             
             if not host_replaced:
                 new_headers.append((b"host", b"localhost:8000"))
@@ -597,6 +564,7 @@ class HostFixMiddleware:
             scope["headers"] = new_headers
 
         await self.app(scope, receive, send)
+
 if __name__ == "__main__":
     start_autonomous_life()
     port = int(os.environ.get("PORT", 10000))
