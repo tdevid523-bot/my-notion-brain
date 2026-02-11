@@ -56,7 +56,8 @@ def _gps_to_address(lat, lon):
         # 这里填你的高德Key，保留引号
         amap_key = "435041ed0364264c810784e5468b3329" 
         
-        url = f"https://restapi.amap.com/v3/geocode/regeo?output=json&location={lon},{lat}&key={amap_key}&radius=1000&extensions=base"
+        # 🟢 注意结尾增加了 &coordsys=gps 用于自动纠偏
+        url = f"https://restapi.amap.com/v3/geocode/regeo?output=json&location={lon},{lat}&key={amap_key}&radius=1000&extensions=base&coordsys=gps"
         
         resp = requests.get(url, timeout=5)
         if resp.status_code == 200:
