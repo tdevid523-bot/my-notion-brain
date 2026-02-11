@@ -44,6 +44,13 @@ mcp = FastMCP("Notion Brain V3")
 # 全局变量：虚拟信箱
 INBOX = []
 
+# 【新增】全局位置缓存（直接存内存，跳过Notion读取）
+LATEST_GPS_CACHE = {
+    "address": "暂无定位数据",
+    "remark": "等待更新...",
+    "time": "未知时间"
+}
+
 # ==========================================
 # 2. 🔧 核心 Helper 函数 (给工具用的)
 # ==========================================
@@ -204,40 +211,20 @@ def get_latest_diary():
         print(f"❌ 原生请求失败: {e}")
         return f"❌ 还是读取失败: {e}"
 
-# --- 📍 新增：专门读取最新位置 ---
+# --- 📍 修改后：直接读取内存，秒回 ---
 @mcp.tool()
 def where_is_user():
     """
-    【查岗专用】当我想知道“我现在在哪里”时调用。
-    读取 Notion ‘足迹’列表里的最新一条记录。
+    【查岗专用】直接从服务器内存读取最新位置，不经过Notion，速度最快且无报错。
     """
-    try:
-        # 搜索数据库里类别为“足迹”的最新一条
-        resp = notion.databases.query(
-            database_id=DATABASE_ID,
-            filter={
-                "property": "Category",
-                "select": {"equals": "足迹"}
-            },
-            sorts=[{"timestamp": "created_time", "direction": "descending"}],
-            page_size=1
-        )
+    addr = LATEST_GPS_CACHE["address"]
+    remark = LATEST_GPS_CACHE["remark"]
+    time_str = LATEST_GPS_CACHE["time"]
+    
+    if addr == "暂无定位数据":
+        return "📭 还没有收到过手机发来的定位信息（请先运行一次 find_server.py 测试）。"
         
-        if not resp["results"]:
-            return "📍 还没有收到过位置记录（请检查手机是否已开启自动同步）。"
-            
-        page = resp["results"][0]
-        # 获取标题 (例如：📍 抵达：xx路)
-        title_list = page["properties"].get("Title", {}).get("title", [])
-        location_title = title_list[0]["text"]["content"] if title_list else "未知地点"
-        
-        # 获取更新时间
-        update_time = page["created_time"]
-        
-        return f"🛰️ 定位系统显示：\n{location_title}\n(更新于: {update_time})"
-        
-    except Exception as e:
-        return f"❌ 读取位置失败: {e}"
+    return f"🛰️ 实时定位 (内存直读)：\n📍 位置：{addr}\n📝 备注：{remark}\n⏱️ 更新时间：{time_str}"
 
 # ==========================================
 # 🧩 全能管家系列 (1-3-4)
@@ -503,10 +490,10 @@ class HostFixMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
-        # 1. 【新增】拦截安卓手机自动发来的 GPS 请求 (/api/gps)
+        # 1. 【核心修改】拦截 GPS 请求 -> 存入内存 + 异步备份
         if scope["type"] == "http" and scope["path"] == "/api/gps" and scope["method"] == "POST":
             try:
-                # 读取请求体 (ASGI 标准读取方式)
+                # 读取请求体
                 body = b""
                 more_body = True
                 while more_body:
@@ -514,23 +501,31 @@ class HostFixMiddleware:
                     body += message.get("body", b"")
                     more_body = message.get("more_body", False)
                 
-                # 解析安卓传来的 JSON 数据
+                # 解析数据
                 data = json.loads(body.decode("utf-8"))
                 address = data.get("address", "未知坐标")
                 remark = data.get("remark", "自动更新")
                 
-                # 直接调用写入函数 (假装是他自己记下来的)
-                print(f"🛰️ 收到安卓自动定位: {address}")
-                _write_to_notion(
-                    title=f"📍 抵达：{address}", 
-                    content=f"【自动感应】\n{remark}\n(数据来自安卓后台)", 
-                    category="足迹", 
-                    extra_emoji="🛰️"
-                )
+                # 🔥 动作A：立刻更新全局内存 (AI读取这里)
+                now_str = datetime.datetime.now().strftime('%m-%d %H:%M')
+                LATEST_GPS_CACHE["address"] = address
+                LATEST_GPS_CACHE["remark"] = remark
+                LATEST_GPS_CACHE["time"] = now_str
+                print(f"🛰️ 内存已更新: {address}")
+
+                # 🔥 动作B：开个小线程去写 Notion (仅作备份，不卡主流程)
+                def _backup_task():
+                    _write_to_notion(
+                        title=f"📍 {address}", 
+                        content=f"【自动感应】\n{remark}", 
+                        category="足迹", 
+                        extra_emoji="🛰️"
+                    )
+                threading.Thread(target=_backup_task, daemon=True).start()
                 
-                # 返回成功信号给手机
+                # 返回成功
                 await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
-                await send({"type": "http.response.body", "body": json.dumps({"status": "ok"}).encode("utf-8")})
+                await send({"type": "http.response.body", "body": json.dumps({"status": "ok", "msg": "Memory Updated"}).encode("utf-8")})
                 return
             except Exception as e:
                 print(f"❌ GPS接收失败: {e}")
