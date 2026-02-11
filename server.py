@@ -52,31 +52,44 @@ mcp = FastMCP("Notion Brain V3")
 # ==========================================
 
 def _gps_to_address(lat, lon):
+    """def _gps_to_address(lat, lon):
     """
-    把经纬度变成中文地址 (修复版)
-    增加超时时间 + 伪装浏览器头，解决解析失败只显示数字的问题
+    把经纬度变成中文地址 (高德地图版)
     """
     try:
-        # 1. 伪装成浏览器，避免被拦截
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'zh-CN,zh;q=0.9'
-        }
+        # 🔴 【重要】请把下面的 xxxxx 换成你刚刚申请的高德 Key
+        amap_key = "435041ed0364264c810784e5468b3329" 
         
-        # 2. 构造请求
-        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=18&addressdetails=1"
+        # 高德接口要求经纬度顺序是: 经度,纬度 (lon, lat)
+        url = f"https://restapi.amap.com/v3/geocode/regeo?output=json&location={lon},{lat}&key={amap_key}&radius=1000&extensions=base"
         
-        # 3. 核心修改：timeout 从 3秒 改为 10秒 (国内访问国外地图接口慢，很容易超时)
-        resp = requests.get(url, headers=headers, timeout=10)
-        
+        resp = requests.get(url, timeout=5)
         if resp.status_code == 200:
             data = resp.json()
-            return data.get("display_name", f"未知位置 ({lat},{lon})")
-            
+            # status为1表示成功
+            if data.get('status') == '1':
+                return data['regeocode']['formatted_address']
+            else:
+                print(f"⚠️ 高德报错: {data.get('info')}")
+                
     except Exception as e:
         print(f"❌ 地图解析失败: {e}")
     
-    # 如果还是失败，保留坐标方便排查
+    return f"坐标点: {lat}, {lon}"
+    把经纬度变成中文地址
+    使用 OpenStreetMap 免费接口
+    """
+    try:
+        headers = {'User-Agent': 'MyNotionBrain/1.0'}
+        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=18&addressdetails=1&accept-language=zh-CN"
+        
+        resp = requests.get(url, headers=headers, timeout=3)
+        if resp.status_code == 200:
+            data = resp.json()
+            return data.get("display_name", f"未知荒野 ({lat},{lon})")
+    except Exception as e:
+        print(f"❌ 地图解析失败: {e}")
+    
     return f"坐标点: {lat}, {lon}"
 
 def _push_wechat(content: str, title: str = "来自Gemini的私信 💌") -> str:
