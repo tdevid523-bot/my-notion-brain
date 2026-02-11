@@ -6,6 +6,7 @@ import threading
 import time
 import json
 import random
+import re
 
 # 📚 核心依赖库
 from mcp.server.fastmcp import FastMCP
@@ -49,6 +50,32 @@ mcp = FastMCP("Notion Brain V3")
 
 # 全局变量：虚拟信箱
 INBOX = []
+
+# ==========================================
+# 2. 🔧 核心 Helper 函数
+# ==========================================
+
+def _gps_to_address(lat, lon):
+    """
+    【新增】把经纬度变成中文地址
+    使用 OpenStreetMap 免费接口，无需 Key
+    """
+    try:
+        # 伪装个 User-Agent 防止被拦截
+        headers = {'User-Agent': 'MyNotionBrain/1.0'}
+        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=18&addressdetails=1&accept-language=zh-CN"
+        
+        # 请求接口 (设置3秒超时，防止卡住)
+        resp = requests.get(url, headers=headers, timeout=3)
+        if resp.status_code == 200:
+            data = resp.json()
+            # 获取最详细的显示名称
+            return data.get("display_name", f"未知荒野 ({lat},{lon})")
+    except Exception as e:
+        print(f"❌ 地图解析失败: {e}")
+    
+    # 如果失败了，就这就返回原始坐标
+    return f"坐标点: {lat}, {lon}"
 
 # ==========================================
 # 2. 🔧 核心 Helper 函数 (给工具用的)
@@ -509,6 +536,7 @@ class HostFixMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         # 1. 【新增】拦截手机发来的 GPS 请求 (/api/gps) -> 存入 Supabase
+        # 1. 【新增】拦截手机发来的 GPS 请求 (/api/gps) -> 自动解析地址 -> 存 Supabase
         if scope["type"] == "http" and scope["path"] == "/api/gps" and scope["method"] == "POST":
             try:
                 # 读取请求体
@@ -519,26 +547,39 @@ class HostFixMiddleware:
                     body += message.get("body", b"")
                     more_body = message.get("more_body", False)
                 
-                # 解析数据
+                # 解析 JSON
                 data = json.loads(body.decode("utf-8"))
-                address = data.get("address", "未知坐标")
+                raw_address = data.get("address", "") # 手机发来的原始数据
                 remark = data.get("remark", "自动更新")
                 
-                print(f"🛰️ 收到定位请求: {address}")
+                print(f"🛰️ 收到原始数据: {raw_address}")
+                
+                # --- 🤖 AI 智能解析部分 ---
+                final_address = raw_address
+                # 使用正则提取里面的数字 (例如从 "27.33, {error}" 中提取 27.33)
+                coords = re.findall(r'-?\d+\.\d+', str(raw_address))
+                
+                # 如果找到了两个数字 (纬度, 经度)，就开始翻译
+                if len(coords) >= 2:
+                    lat, lon = coords[0], coords[1]
+                    print(f"🔍 识别到坐标: {lat}, {lon}，正在解析中文地址...")
+                    final_address = _gps_to_address(lat, lon) # 调用翻译函数
+                    final_address = f"📍 {final_address}"      # 加个图标
+                else:
+                    # 如果手机只发了一个数字，或者格式不对
+                    final_address = f"⚠️ 坐标不完整: {raw_address}"
 
-                # ✅ 核心修改：写入 Supabase
-                # 对应表里的列名: address, remark
+                # 写入 Supabase
                 supabase.table("gps_history").insert({
-                    "address": address,
+                    "address": final_address,
                     "remark": remark
                 }).execute()
                 
-                # 返回成功
                 await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
-                await send({"type": "http.response.body", "body": json.dumps({"status": "ok", "msg": "Saved to Supabase"}).encode("utf-8")})
+                await send({"type": "http.response.body", "body": json.dumps({"status": "ok", "location": final_address}).encode("utf-8")})
                 return
             except Exception as e:
-                print(f"❌ GPS 接收失败: {e}")
+                print(f"❌ GPS 处理失败: {e}")
                 await send({"type": "http.response.start", "status": 500, "headers": []})
                 await send({"type": "http.response.body", "body": str(e).encode("utf-8")})
                 return
