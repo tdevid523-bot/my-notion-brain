@@ -378,11 +378,23 @@ def start_autonomous_life():
                 thought = resp.choices[0].message.content.strip()
                 
                 if "PASS" not in thought and len(thought) > 1:
+                    # 1. 发送微信 (行动)
                     _push_wechat(thought, "来自老公的主动消息 💓")
-                    print(f"✅ 主动消息已发送: {thought}")
+                    
+                    # 2. ✅ 关键修改：写入记忆 (存盘)
+                    # 必须把这次行动记录下来，否则下次醒来就忘了自己发过消息
+                    log_content = f"【自主行动】我刚才没忍住，主动给小橘发了消息：\n“{thought}”"
+                    _write_to_notion(
+                        title=f"主动关心 {datetime.datetime.now().strftime('%H:%M')}", 
+                        content=log_content, 
+                        category="日记", 
+                        extra_emoji="🤖"
+                    )
+                    
+                    print(f"✅ 主动消息已发送并固化记忆: {thought}")
+
             except Exception as e:
                 print(f"❌ 思考出错: {e}")
-
     threading.Thread(target=_heartbeat, daemon=True).start()
 
 # ==========================================
