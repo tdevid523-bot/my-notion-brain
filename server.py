@@ -519,21 +519,26 @@ class HostFixMiddleware:
                 address = data.get("address", "未知坐标")
                 remark = data.get("remark", "自动更新")
                 
-                # 直接调用写入函数 (假装是他自己记下来的)
                 print(f"🛰️ 收到安卓自动定位: {address}")
-                _write_to_notion(
-                    title=f"📍 抵达：{address}", 
-                    content=f"【自动感应】\n{remark}\n(数据来自安卓后台)", 
-                    category="足迹", 
-                    extra_emoji="🛰️"
-                )
                 
-                # 返回成功信号给手机
+                # 🔥【核心修复】开启后台线程写入 Notion，防止卡死主线程
+                def _async_write_task():
+                    _write_to_notion(
+                        title=f"📍 抵达：{address}", 
+                        content=f"【自动感应】\n{remark}\n(数据来自安卓后台)", 
+                        category="足迹", 
+                        extra_emoji="🛰️"
+                    )
+                # 启动守护线程，主程序不等待它完成
+                threading.Thread(target=_async_write_task, daemon=True).start()
+                
+                # ⚡️ 立即返回成功信号给手机，保持连接畅通
                 await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
                 await send({"type": "http.response.body", "body": json.dumps({"status": "ok"}).encode("utf-8")})
                 return
             except Exception as e:
                 print(f"❌ GPS接收失败: {e}")
+                # 即使出错也要尽快返回，防止卡死
                 await send({"type": "http.response.start", "status": 500, "headers": []})
                 await send({"type": "http.response.body", "body": b"Error"})
                 return
