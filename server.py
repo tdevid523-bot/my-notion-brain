@@ -180,16 +180,45 @@ def save_expense(item: str, amount: float, type: str = "餐饮"):
 
 @mcp.tool()
 def save_daily_diary(summary: str, mood: str = "平静"):
-    """【聊天结束时调用】记录日记"""
+    """【聊天结束时调用】记录日记 (实时同步向量库)"""
     try:
+        # 1. 存入 Supabase (主数据库)
+        today_str = str(datetime.date.today())
+        title = f"日记 {today_str}"
+        
         data = {
-            "title": f"日记 {datetime.date.today()}",
+            "title": title,
             "content": summary,
             "category": "日记",
             "mood": mood
         }
-        supabase.table("memories").insert(data).execute()
-        return "✅ 日记已永久刻录在 Supabase 数据库中。"
+        # 获取插入后的返回数据，以便拿到 ID
+        response = supabase.table("memories").insert(data).execute()
+        
+        # 2. 实时同步到 Pinecone (RAG 核心升级：写完即刻可搜)
+        if response.data:
+            new_record = response.data[0]
+            record_id = str(new_record['id']) # 确保 ID 一致
+            
+            # 准备向量化内容
+            text_to_embed = f"标题: {title}\n内容: {summary}\n心情: {mood}"
+            
+            # 生成向量 (Embedding)
+            vec = list(model.embed([text_to_embed]))[0].tolist()
+            
+            # 存入 Pinecone
+            metadata = {
+                "text": summary,
+                "title": title,
+                "date": today_str,
+                "mood": mood
+            }
+            index.upsert(vectors=[(record_id, vec, metadata)])
+            
+            return "✅ 日记已双重刻录 (Supabase + Pinecone)！\n记忆已实时生效，现在你立刻问我，我就能想起来了。"
+            
+        return "✅ 日记已存入 Supabase (但向量同步跳过)。"
+
     except Exception as e:
         return f"❌ 日记保存失败: {e}"
 
