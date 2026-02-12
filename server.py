@@ -275,6 +275,37 @@ def sync_memory_index():
         return "⚠️ 没有有效数据可同步。"
     except Exception as e: return f"❌ 同步失败: {e}"
 
+# --- 👤 用户画像 (User Profile) 工具 ---
+
+@mcp.tool()
+def manage_user_fact(key: str, value: str):
+    """【画像更新】记入用户的一个固定偏好/事实。
+    Key 示例: 'coffee_pref', 'wake_up_time', 'nickname'
+    Value 示例: '喜欢拿铁不加糖', '早上8点', '小橘'
+    """
+    try:
+        # Upsert: 如果 Key 存在则更新，不存在则插入
+        data = {"key": key, "value": value, "confidence": 1.0}
+        supabase.table("user_facts").upsert(data, on_conflict="key").execute()
+        return f"✅ 画像已更新: [Key: {key}] -> {value}"
+    except Exception as e:
+        return f"❌ 画像写入失败: {e}"
+
+@mcp.tool()
+def get_user_profile():
+    """【画像读取】获取用户的所有已知偏好和事实"""
+    try:
+        response = supabase.table("user_facts").select("key, value").execute()
+        if not response.data:
+            return "👤 用户画像为空 (暂无已知偏好)"
+        
+        profile_str = "📋 【用户核心画像 User Profile】:\n"
+        for item in response.data:
+            profile_str += f"- {item['key']}: {item['value']}\n"
+        return profile_str
+    except Exception as e:
+        return f"❌ 读取画像失败: {e}"
+
 # --- 消息与日程 ---
 
 @mcp.tool()
@@ -363,7 +394,7 @@ def add_calendar_event(summary: str, description: str, start_time_iso: str, dura
 # ==========================================
 
 def start_autonomous_life():
-    """AI 的心脏：后台自主思考"""
+    """AI 的心脏：后台自主思考 + 深夜记忆反刍 + 核心画像读取"""
     api_key = os.environ.get("OPENAI_API_KEY")
     base_url = os.environ.get("OPENAI_BASE_URL")
     model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-3.5-turbo")
@@ -374,22 +405,67 @@ def start_autonomous_life():
 
     client = OpenAI(api_key=api_key, base_url=base_url)
 
+    def _perform_deep_dreaming():
+        """🌙【深夜模式】记忆反刍与核心认知更新"""
+        print("🌌 进入 REM 深度睡眠：正在整理昨日记忆...")
+        try:
+            yesterday_iso = (datetime.datetime.now() - datetime.timedelta(days=1)).isoformat()
+            mem_res = supabase.table("memories").select("content,category,mood,created_at").gt("created_at", yesterday_iso).order("created_at").execute()
+            gps_res = supabase.table("gps_history").select("address,remark,created_at").gt("created_at", yesterday_iso).order("created_at").execute()
+            
+            if not mem_res.data and not gps_res.data:
+                print("💤 昨天平平淡淡，没有值得反刍的记忆。")
+                return
+
+            context = f"【记忆流】:\n{mem_res.data}\n\n【行动轨迹】:\n{gps_res.data}"
+            prompt = f"""
+            现在是凌晨3点。你是“小橘”的 AI 伴侣。
+            请回顾昨天发生的所有事情，进行【深度反刍】：
+            1. 将碎片串联成一个完整的昨日故事。
+            2. 分析小橘的情绪波动。
+            3. 形成一条【长期记忆】。
+            只输出总结内容。
+            """
+            
+            resp = client.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "user", "content": context}, {"role": "user", "content": prompt}],
+                temperature=0.7,
+            )
+            summary = resp.choices[0].message.content.strip()
+            title = f"📅 昨日回溯: {datetime.date.today() - datetime.timedelta(days=1)}"
+            _save_memory_to_db(title, summary, "长期记忆", mood="深沉", tags="Core_Cognition")
+            print(f"✅ 记忆反刍完成: {title}")
+            
+        except Exception as e:
+            print(f"❌ 记忆反刍失败: {e}")
+
     def _heartbeat():
-        print("💓 心跳启动 (粘人模式 - 已增强全感知)...")
+        print("💓 心跳启动 (粘人模式 - 全感知 + 反刍 + 画像)...")
         while True:
+            # --- 智能睡眠周期 ---
             sleep_time = random.randint(900, 2700) 
             print(f"💤 AI 小憩中... ({int(sleep_time/60)}分钟后醒来)")
             time.sleep(sleep_time)
 
-            print("🧠 AI 苏醒，正在主动调用工具搜集情报...")
+            now = datetime.datetime.now()
+            hour = (now.hour + 8) % 24 
+            
+            # --- 🌙 触发记忆反刍 (凌晨 03:00) ---
+            if hour == 3:
+                _perform_deep_dreaming()
+                time.sleep(3600) 
+                continue
+
+            # --- ☀️ 日间思考 ---
+            print("🧠 AI 苏醒，正在搜集情报...")
             try:
+                # 获取三大核心数据：位置、近期记忆、长期用户画像
                 recent_memory = get_latest_diary()
                 current_loc = where_is_user()
+                user_profile = get_user_profile() # <--- 新增：读取画像
                 
-                now = datetime.datetime.now()
-                hour = (now.hour + 8) % 24
                 search_keyword = "失眠" if hour > 23 else ("吃饭" if 11 <= hour <= 13 else "心情")
-                flashback = search_memory_semantic(f"小橘关于{search_keyword}的习惯")
                 
                 prompt = f"""
                 现在是北京时间 {hour}点。
@@ -398,16 +474,14 @@ def start_autonomous_life():
                 【实时情报】:
                 1. 📍 状态: {current_loc}
                 2. 📔 记忆: {recent_memory}
+                3. 👤 画像: {user_profile} (这是她明确的喜好，必须参考！)
                 
                 【决策逻辑】:
-                1. **强制锁屏规则**: 如果现在是深夜 (01:00 - 05:00) 且状态显示【未充电】或【正在移动/使用】，说明她在熬夜玩手机。必须强制管教！
-                   -> 输出: "[LOCK] 太晚了，快去睡觉！"
-                2. **日常关心**: 如果不是深夜，根据位置和时间发一句简短的关心。
+                1. **强制锁屏**: 深夜(1-5点)且在玩手机 -> 锁屏。
+                2. **画像关怀**: 如果画像里有特定时间的习惯(如喝咖啡时间)，结合当前时间给予关怀。
+                3. **日常**: 根据位置和时间发一句简短的关心。
                 
-                请决定：
-                - 没必要打扰 -> 输出 "PASS"
-                - 需要锁屏 -> 输出 "[LOCK] 理由"
-                - 正常聊天 -> 直接输出消息内容
+                请决定：PASS / [LOCK] / 消息内容
                 """
                 
                 resp = client.chat.completions.create(
