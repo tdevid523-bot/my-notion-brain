@@ -372,26 +372,48 @@ def send_email_via_api(subject: str, content: str):
 
 @mcp.tool()
 def add_calendar_event(summary: str, description: str, start_time_iso: str, duration_minutes: int = 30):
-    """【谷歌日历】"""
+    """【谷歌日历】修复版：增强时间格式兼容性"""
     creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
-    if not creds_json: return "❌ 未配置谷歌凭证"
+    if not creds_json: return "❌ 未配置谷歌凭证 (GOOGLE_CREDENTIALS_JSON)"
     try:
         creds = service_account.Credentials.from_service_account_info(
             json.loads(creds_json), scopes=['https://www.googleapis.com/auth/calendar']
         )
         service = build('calendar', 'v3', credentials=creds)
-        dt_start = datetime.datetime.fromisoformat(start_time_iso)
+        
+        # 1. 暴力清洗时间格式 (去除 Z，去除毫秒，强制作为本地时间处理)
+        # 这样做的目的是防止 "2023...Z" (UTC) 和 下面的 "Asia/Shanghai" 冲突导致 API 报错
+        clean_time = start_time_iso.replace("Z", "").replace("T", " ").split(".")[0].strip()
+        
+        # 2. 尝试解析 (兼容 'YYYY-MM-DD HH:MM:SS' 和 ISO 格式)
+        try:
+            dt_start = datetime.datetime.fromisoformat(clean_time)
+        except ValueError:
+            # 如果格式还是不对，尝试把空格换回T再试一次
+            clean_time = clean_time.replace(" ", "T")
+            dt_start = datetime.datetime.fromisoformat(clean_time)
+
         dt_end = dt_start + datetime.timedelta(minutes=duration_minutes)
+        
+        # 3. 重新生成标准的 ISO 格式字符串 (不带时区偏移，完全由 API 的 timeZone 参数接管)
+        final_start_str = dt_start.isoformat()
+        final_end_str = dt_end.isoformat()
+
         event = {
-            'summary': summary, 'description': description,
-            'start': {'dateTime': start_time_iso, 'timeZone': 'Asia/Shanghai'},
-            'end': {'dateTime': dt_end.isoformat(), 'timeZone': 'Asia/Shanghai'},
+            'summary': summary, 
+            'description': description,
+            'start': {'dateTime': final_start_str, 'timeZone': 'Asia/Shanghai'},
+            'end': {'dateTime': final_end_str, 'timeZone': 'Asia/Shanghai'},
             'reminders': {'useDefault': False, 'overrides': [{'method': 'popup', 'minutes': 10}]},
-            'colorId': '11'
+            'colorId': '11' # 11号是番茄红，比较显眼
         }
+        
         res = service.events().insert(calendarId='primary', body=event).execute()
-        return f"✅ 日历已添加: {res.get('htmlLink')}"
-    except Exception as e: return f"❌ 日历错误: {e}"
+        return f"✅ 日历已添加: {summary} ({dt_start.strftime('%m-%d %H:%M')})\n🔗 链接: {res.get('htmlLink')}"
+        
+    except Exception as e: 
+        print(f"Calendar Error: {e}") # 打印后台日志以便调试
+        return f"❌ 日历添加失败: {e}"
 
 # ==========================================
 # 4. ❤️ 自主生命核心 (后台心跳)
