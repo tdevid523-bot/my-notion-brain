@@ -284,20 +284,22 @@ def trigger_lock_screen(reason: str = "熬夜强制休息"):
     仅在检测到深夜(23:00-05:00)且用户仍在玩手机时调用。
     """
     print(f"🚫 正在执行强制锁屏，理由: {reason}")
+
+    # 1. 🚨 先发微信通知 (让用户死个明白)
+    # 这样当你屏幕黑掉的时候，手机锁屏界面会刚好亮起这条消息
+    _push_wechat(f"🔒 啪！屏幕已锁定。\n原因：{reason}\n(快去睡觉，别挣扎了😈)", "【强制执行】")
     
-    # 方式1: Webhook (推荐，反应最快)
+    # 2. 🔌 执行锁屏 (Webhook)
     if MACRODROID_URL:
         try:
             # 发送 GET 请求触发 MacroDroid
             requests.get(MACRODROID_URL, params={"reason": reason}, timeout=5)
-            return f"✅ 已通过 Webhook 发送锁屏指令: {reason}"
+            return f"✅ 已执行锁屏: {reason}"
         except Exception as e:
             return f"❌ Webhook 请求失败: {e}"
             
-    # 方式2: 推送指令 (备用，需 MacroDroid 拦截通知)
-    # 只有当没配置 Webhook 时才走这条路
-    result = _push_wechat(f"🔒 LOCK_NOW | {reason}", "【系统指令】强制锁屏")
-    return f"📡 (无Webhook) 已发送推送指令: {result}"
+    # 3. 备用方案
+    return "⚠️ 未配置 MACRODROID_URL，无法锁屏，仅发送了警告。"
 
 # --- 消息与日程 ---
 
