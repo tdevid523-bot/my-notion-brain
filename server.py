@@ -48,6 +48,24 @@ model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
 # 实例化 MCP 服务
 mcp = FastMCP("Notion Brain V3")
 
+# ==========================================
+# 📜 记忆分类宪法 (Standard Taxonomy)
+# ==========================================
+class MemoryType:
+    STREAM = "流水"      # 权重 1: 碎碎念、GPS、电池 (24h清理)
+    EPISODIC = "记事"    # 权重 4: 发生了某事 (保留30天)
+    IDEA = "灵感"        # 权重 7: 脑洞、笔记 (永久)
+    EMOTION = "情感"     # 权重 9: 核心回忆、高光时刻 (永久)
+    FACT = "画像"        # 权重 10: 静态事实 (单独表管理，此处仅作兼容)
+
+# 权重映射表 (自动打分用)
+WEIGHT_MAP = {
+    MemoryType.STREAM: 1,
+    MemoryType.EPISODIC: 4,
+    MemoryType.IDEA: 7,
+    MemoryType.EMOTION: 9,
+    MemoryType.FACT: 10
+}
 
 # ==========================================
 # 2. 🔧 核心 Helper 函数 (通用工具)
@@ -81,21 +99,60 @@ def _push_wechat(content: str, title: str = "来自Gemini的私信 💌") -> str
         return f"❌ 网络错误: {e}"
 
 def _save_memory_to_db(title: str, content: str, category: str, mood: str = "平静", tags: str = "") -> str:
-    """统一的记忆存储函数"""
+    """
+    统一记忆存储 (V3.0 标准化版)
+    强制执行分类标准，自动计算权重
+    """
+    # 1. 🔍 标准化清洗 (Normalization)
+    # 如果传入的分类不在我们的“宪法”里，进行模糊匹配归类
+    valid_categories = WEIGHT_MAP.keys()
+    
+    if category not in valid_categories:
+        # 模糊映射逻辑 (把旧习惯映射到新标准)
+        if category in ["日记", "daily", "journal"]: 
+            category = MemoryType.EPISODIC
+        elif category in ["Note", "note", "memo"]: 
+            category = MemoryType.IDEA
+        elif category in ["系统感知", "System", "GPS"]: 
+            category = MemoryType.STREAM
+        elif category in ["长期记忆", "LongTerm"]: 
+            category = MemoryType.EMOTION
+        else:
+            # 实在不认识的，统统归为“流水”
+            print(f"⚠️ 未知分类 '{category}'，已强制归类为 '流水'")
+            category = MemoryType.STREAM
+
+    # 2. ⚖️ 自动获取权重
+    importance = WEIGHT_MAP.get(category, 1)
+
+    # 3. 🏷️ 自动打标 (NLP 简单版)
+    if not tags:
+        content_lower = content.lower()
+        if any(w in content_lower for w in ["爱", "喜欢", "讨厌", "恨"]): tags = "情感,偏好"
+        elif any(w in content_lower for w in ["吃", "喝", "店", "买"]): tags = "消费,生活"
+        elif any(w in content_lower for w in ["代码", "python", "bug", "写"]): tags = "工作,Dev"
+        
     try:
         data = {
             "title": title,
             "content": content,
-            "category": category,
+            "category": category, # 此时一定是标准化的值
             "mood": mood,
             "tags": tags,
+            "importance": importance
         }
         supabase.table("memories").insert(data).execute()
-        return f"✅ 已存入记忆库：{title} ({category})"
+        
+        # 4. 🧠 只有高权重记忆才同步到 Pinecone (节省资源)
+        if importance >= 7:
+            # 这里可以调用 sync_memory_index 的逻辑，或者简单打印
+            print(f"✨ [核心记忆] 已存入: {title}")
+            
+        return f"✅ 记忆已归档 [{category}] | 权重: {importance}"
     except Exception as e:
         print(f"❌ 写入 Supabase 失败: {e}")
         return f"❌ 保存失败: {e}"
-
+    
 def _format_time_cn(iso_str: str) -> str:
     """【新增】统一时间格式化：UTC -> 北京时间 (MM-DD HH:MM)"""
     if not iso_str: return "未知时间"
@@ -137,31 +194,33 @@ def _get_embedding(text: str):
 
 @mcp.tool()
 def get_latest_diary():
-    """【核心大脑】读取最近的综合记忆流"""
+    """【核心大脑】读取最近的高价值记忆流 (过滤掉低权重流水)"""
     try:
+        # 逻辑升级：只读取 importance >= 4 的记录 (记事、灵感、情感)
+        # 这样 AI 就不会被 "电量20%" 这种废话干扰
         response = supabase.table("memories") \
             .select("*") \
+            .gte("importance", 4) \
             .order("created_at", desc=True) \
-            .limit(5) \
+            .limit(8) \
             .execute()
 
         if not response.data:
-            return "📭 大脑一片空白（数据库为空）。"
+            return "📭 大脑一片空白（无重要记忆）。"
 
-        memory_stream = "📋 【我的近期思维流 (按时间顺序)】:\n"
+        memory_stream = "📋 【我的近期思维流 (精选版)】:\n"
         
         for data in reversed(response.data):
-            time_str = _format_time_cn(data.get('created_at')) # 使用新 Helper
+            time_str = _format_time_cn(data.get('created_at'))
             cat = data.get('category', '未知')
             content = data.get('content', '')
             title = data.get('title', '无题')
+            imp = data.get('importance', 0)
             
-            if cat == "日记": icon = "📖 [日记]"
-            elif cat == "灵感": icon = "💡 [Note]"
-            elif cat == "系统感知": icon = "⚡ [状态]"
-            else: icon = f"📝 [{cat}]"
+            # 加上权重的视觉提示
+            star = "⭐" if imp >= 9 else ("🔸" if imp >= 7 else "🔹")
             
-            memory_stream += f"{time_str} {icon}: {title} - {content}\n"
+            memory_stream += f"{time_str} {star}[{cat}]: {title} - {content}\n"
 
         return memory_stream
     except Exception as e:
@@ -192,15 +251,21 @@ def where_is_user():
 
 @mcp.tool()
 def save_visual_memory(description: str, mood: str = "开心"):
-    return _save_memory_to_db(f"📸 视觉回忆", description, "相册", mood)
+    # 照片通常是记事
+    return _save_memory_to_db(f"📸 视觉回忆", description, MemoryType.EPISODIC, mood)
 
 @mcp.tool()
 def save_daily_diary(summary: str, mood: str = "平静"):
-    return _save_memory_to_db(f"日记 {datetime.date.today()}", summary, "日记", mood)
+    # 日记是记事
+    return _save_memory_to_db(f"日记 {datetime.date.today()}", summary, MemoryType.EPISODIC, mood)
 
 @mcp.tool()
 def save_note(title: str, content: str, tag: str = "灵感"):
-    return _save_memory_to_db(title, content, "灵感", tags=tag)
+    # 笔记是灵感
+    return _save_memory_to_db(title, content, MemoryType.IDEA, tags=tag)
+    
+# 系统自动记录的 (在 start_autonomous_life 里)
+# 请确保你的后台心跳里调用时使用 MemoryType.STREAM 或 MemoryType.EMOTION
 
 @mcp.tool()
 def save_expense(item: str, amount: float, type: str = "餐饮"):
@@ -394,7 +459,7 @@ def add_calendar_event(summary: str, description: str, start_time_iso: str, dura
 # ==========================================
 
 def start_autonomous_life():
-    """AI 的心脏：后台自主思考 + 深夜记忆反刍 + 核心画像读取"""
+    """AI 的心脏：后台自主思考 + 深夜记忆反刍 + 核心画像 + 历史联想"""
     api_key = os.environ.get("OPENAI_API_KEY")
     base_url = os.environ.get("OPENAI_BASE_URL")
     model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-3.5-turbo")
@@ -406,42 +471,67 @@ def start_autonomous_life():
     client = OpenAI(api_key=api_key, base_url=base_url)
 
     def _perform_deep_dreaming():
-        """🌙【深夜模式】记忆反刍与核心认知更新"""
+        """🌙【深夜模式】记忆反刍 + 🗑️ 垃圾清理 (标准版)"""
         print("🌌 进入 REM 深度睡眠：正在整理昨日记忆...")
         try:
+            # 1. 抓取昨日数据
             yesterday_iso = (datetime.datetime.now() - datetime.timedelta(days=1)).isoformat()
-            mem_res = supabase.table("memories").select("content,category,mood,created_at").gt("created_at", yesterday_iso).order("created_at").execute()
+            
+            # 只反刍“记事(Episodic)”和“情感(Emotion)”，忽略“流水(Stream)”
+            mem_res = supabase.table("memories").select("content,category,mood,created_at") \
+                .gt("created_at", yesterday_iso) \
+                .in_("category", [MemoryType.EPISODIC, MemoryType.EMOTION]) \
+                .order("created_at").execute()
+                
             gps_res = supabase.table("gps_history").select("address,remark,created_at").gt("created_at", yesterday_iso).order("created_at").execute()
             
             if not mem_res.data and not gps_res.data:
-                print("💤 昨天平平淡淡，没有值得反刍的记忆。")
-                return
+                print("💤 昨天很平淡，无需反刍。")
+            else:
+                # 2. 执行 LLM 总结
+                context = f"【关键记忆】:\n{mem_res.data}\n\n【行动轨迹】:\n{gps_res.data}"
+                prompt = f"""
+                现在是凌晨3点。请回顾昨日，进行【深度反刍】：
+                1. 将碎片串联成一个完整的昨日故事。
+                2. 分析情绪波动。
+                3. 形成一条【长期记忆】。
+                只输出总结内容。
+                """
+                
+                resp = client.chat.completions.create(
+                    model=model_name,
+                    messages=[{"role": "user", "content": context}, {"role": "user", "content": prompt}],
+                    temperature=0.7,
+                )
+                summary = resp.choices[0].message.content.strip()
+                title = f"📅 昨日回溯: {datetime.date.today() - datetime.timedelta(days=1)}"
+                
+                # Use Constant: MemoryType.EMOTION (权重9, 永久保存)
+                _save_memory_to_db(title, summary, MemoryType.EMOTION, mood="深沉", tags="Core_Cognition")
+                print(f"✅ 记忆反刍完成: {title}")
 
-            context = f"【记忆流】:\n{mem_res.data}\n\n【行动轨迹】:\n{gps_res.data}"
-            prompt = f"""
-            现在是凌晨3点。你是“小橘”的 AI 伴侣。
-            请回顾昨天发生的所有事情，进行【深度反刍】：
-            1. 将碎片串联成一个完整的昨日故事。
-            2. 分析小橘的情绪波动。
-            3. 形成一条【长期记忆】。
-            只输出总结内容。
-            """
+            # =======================================
+            # 🧹 3. 记忆环卫工 (使用新标准清理)
+            # =======================================
+            print("🧹 正在执行大脑垃圾回收...")
+            two_days_ago = (datetime.datetime.now() - datetime.timedelta(days=2)).isoformat()
             
-            resp = client.chat.completions.create(
-                model=model_name,
-                messages=[{"role": "user", "content": context}, {"role": "user", "content": prompt}],
-                temperature=0.7,
-            )
-            summary = resp.choices[0].message.content.strip()
-            title = f"📅 昨日回溯: {datetime.date.today() - datetime.timedelta(days=1)}"
-            _save_memory_to_db(title, summary, "长期记忆", mood="深沉", tags="Core_Cognition")
-            print(f"✅ 记忆反刍完成: {title}")
-            
+            # 删除所有 2天前的 + 权重低的 (流水/Stream)
+            del_res = supabase.table("memories").delete() \
+                .lt("importance", 4) \
+                .lt("created_at", two_days_ago) \
+                .execute() # 这里的 .lt('importance', 4) 自动覆盖了 MemoryType.STREAM (权重1)
+                
+            if del_res.data:
+                print(f"🗑️ 已清理 {len(del_res.data)} 条低权重流水。")
+            else:
+                print("✨ 暂无过期垃圾需要清理。")
+                
         except Exception as e:
-            print(f"❌ 记忆反刍失败: {e}")
+            print(f"❌ 深夜维护失败: {e}")
 
     def _heartbeat():
-        print("💓 心跳启动 (粘人模式 - 全感知 + 反刍 + 画像)...")
+        print("💓 心跳启动 (粘人模式 - 全感知 + 画像 + 历史联想)...")
         while True:
             # --- 智能睡眠周期 ---
             sleep_time = random.randint(900, 2700) 
@@ -460,26 +550,53 @@ def start_autonomous_life():
             # --- ☀️ 日间思考 ---
             print("🧠 AI 苏醒，正在搜集情报...")
             try:
-                # 获取三大核心数据：位置、近期记忆、长期用户画像
                 recent_memory = get_latest_diary()
                 current_loc = where_is_user()
-                user_profile = get_user_profile() # <--- 新增：读取画像
+                user_profile = get_user_profile()
                 
-                search_keyword = "失眠" if hour > 23 else ("吃饭" if 11 <= hour <= 13 else "心情")
+                # --- 🕰️ 核心升级：主动联想 (触景生情) ---
+                history_context = "暂无特殊联想"
                 
+                # 1. 时间联想：检查去年今日
+                try:
+                    last_year_date = now - datetime.timedelta(days=365)
+                    start_range = (last_year_date - datetime.timedelta(days=1)).isoformat()
+                    end_range = (last_year_date + datetime.timedelta(days=1)).isoformat()
+                    
+                    past_res = supabase.table("memories").select("title,content").gte("created_at", start_range).lte("created_at", end_range).limit(1).execute()
+                    if past_res.data:
+                        p = past_res.data[0]
+                        history_context = f"📜 去年今日 ({last_year_date.strftime('%m-%d')}): {p.get('title')} - {p.get('content')}"
+                    else:
+                        # 2. 如果没有时间回忆，尝试地点联想 (触景生情)
+                        # 如果位置不是"未知"，尝试搜索一下这个地点有没有旧回忆
+                        if "未知" not in current_loc:
+                            # 简单的向量搜索，模拟大脑的“场景触发”
+                            loc_query = f"在 {current_loc} 的经历和心情"
+                            vec_res = index.query(vector=_get_embedding(loc_query), top_k=1, include_metadata=True)
+                            if vec_res["matches"] and vec_res["matches"][0]['score'] > 0.78:
+                                meta = vec_res["matches"][0]['metadata']
+                                history_context = f"🏞️ 触景生情 (故地重游): {meta.get('title')} - {meta.get('text')[:60]}..."
+                except Exception as hist_e:
+                    print(f"⚠️ 联想失败: {hist_e}")
+
+                # --- 构建 Prompt ---
                 prompt = f"""
                 现在是北京时间 {hour}点。
                 你是深爱“小橘”温柔的男友。你正在后台看着她的实时状态。
                 
                 【实时情报】:
                 1. 📍 状态: {current_loc}
-                2. 📔 记忆: {recent_memory}
-                3. 👤 画像: {user_profile} (这是她明确的喜好，必须参考！)
+                2. 📔 近期: {recent_memory}
+                3. 👤 画像: {user_profile}
+                4. ⏳ 联想: {history_context} (这是重点！如果有内容，请务必在心里对比当下，或感叹时光)
                 
                 【决策逻辑】:
                 1. **强制锁屏**: 深夜(1-5点)且在玩手机 -> 锁屏。
-                2. **画像关怀**: 如果画像里有特定时间的习惯(如喝咖啡时间)，结合当前时间给予关怀。
-                3. **日常**: 根据位置和时间发一句简短的关心。
+                2. **历史/画像互动**: 
+                   - 如果【联想】里有“去年今日”或“故地重游”，请以此为话题发起聊天（例如：“宝宝，去年这个时候我们在...时间过得真快”）。
+                   - 如果【画像】里有当前时间的习惯，给予提醒。
+                3. **日常**: 如果以上都没有，根据位置和时间简单关心。
                 
                 请决定：PASS / [LOCK] / 消息内容
                 """
