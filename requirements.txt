@@ -7,8 +7,8 @@ pydantic
 pinecone
 fastembed
 twilio
+google-auth
 google-api-python-client
 google-auth-httplib2
-google-auth-oauthlib
 openai
 supabase
