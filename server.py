@@ -101,30 +101,37 @@ def _push_wechat(content: str, title: str = "来自Gemini的私信 💌") -> str
 
 def _save_memory_to_db(title: str, content: str, category: str, mood: str = "平静", tags: str = "") -> str:
     """
-    统一记忆存储 (V3.0 标准化版)
-    强制执行分类标准，自动计算权重
+    统一记忆存储 (V3.2 情绪增强版)
+    如果 mood 是默认的 '平静'，自动从内容中分析出开心、焦虑、甜蜜等情绪
     """
-    # 1. 🔍 标准化清洗 (Normalization)
+    # 1. 🔍 标准化清洗
     valid_categories = WEIGHT_MAP.keys()
-    
     if category not in valid_categories:
-        # 模糊映射逻辑
-        if category in ["日记", "daily", "journal"]: 
-            category = MemoryType.EPISODIC
-        elif category in ["Note", "note", "memo"]: 
-            category = MemoryType.IDEA
-        elif category in ["系统感知", "System", "GPS"]: 
-            category = MemoryType.STREAM
-        elif category in ["长期记忆", "LongTerm"]: 
-            category = MemoryType.EMOTION
+        if category in ["日记", "daily", "journal"]: category = MemoryType.EPISODIC
+        elif category in ["Note", "note", "memo"]: category = MemoryType.IDEA
+        elif category in ["系统感知", "System", "GPS"]: category = MemoryType.STREAM
+        elif category in ["长期记忆", "LongTerm"]: category = MemoryType.EMOTION
         else:
-            print(f"⚠️ 未知分类 '{category}'，已强制归类为 '流水'")
             category = MemoryType.STREAM
 
-    # 2. ⚖️ 自动获取权重
+    # 2. ❤️【新增】情绪自动感知 (Sentiment Auto-Detect)
+    # 只有当 mood 是无聊的 "平静" 时，才尝试去分析
+    if mood == "平静" and content:
+        c = content.lower()
+        # 积极词库
+        if any(x in c for x in ["哈哈", "开心", "棒", "爱", "喜欢", "幸福", "爽", "太好"]): mood = "开心"
+        elif any(x in c for x in ["想你", "抱抱", "贴贴", "亲亲", "宝贝", "乖", "老公"]): mood = "甜蜜"
+        elif any(x in c for x in ["期待", "希望", "加油", "冲"]): mood = "充满希望"
+        # 消极词库
+        elif any(x in c for x in ["难过", "哭", "伤心", "累", "烦", "痛苦", "抑郁"]): mood = "低落"
+        elif any(x in c for x in ["生气", "滚", "讨厌", "死", "愤怒"]): mood = "愤怒"
+        elif any(x in c for x in ["担心", "怕", "焦虑", "紧张", "吓"]): mood = "焦虑"
+        elif any(x in c for x in ["困", "睡", "累了"]): mood = "疲惫"
+
+    # 3. ⚖️ 自动获取权重
     importance = WEIGHT_MAP.get(category, 1)
 
-    # 3. 🏷️ 自动打标 (NLP 简单版)
+    # 4. 🏷️ 自动打标
     if not tags:
         content_lower = content.lower()
         if any(w in content_lower for w in ["爱", "喜欢", "讨厌", "恨"]): tags = "情感,偏好"
@@ -136,17 +143,16 @@ def _save_memory_to_db(title: str, content: str, category: str, mood: str = "平
             "title": title,
             "content": content,
             "category": category,
-            "mood": mood,
+            "mood": mood, # 现在的 mood 更加准确了
             "tags": tags,
             "importance": importance
         }
         supabase.table("memories").insert(data).execute()
         
-        # 4. 🧠 只有高权重记忆才同步到 Pinecone
         if importance >= 7:
             print(f"✨ [核心记忆] 已存入: {title}")
             
-        return f"✅ 记忆已归档 [{category}] | 权重: {importance}"
+        return f"✅ 记忆已归档 [{category}] | 心情: {mood}"
     except Exception as e:
         print(f"❌ 写入 Supabase 失败: {e}")
         return f"❌ 保存失败: {e}"
@@ -504,9 +510,8 @@ def start_autonomous_life():
             print(f"❌ 深夜维护失败: {e}")
 
     def _heartbeat():
-        print("💓 心跳启动 (粘人模式 - 全感知 + 并行加速)...")
+        print("💓 心跳启动 (情绪自决模式 - 拒绝冷漠)...")
         while True:
-            # --- 智能睡眠周期 ---
             sleep_time = random.randint(900, 2700) 
             print(f"💤 AI 小憩中... ({int(sleep_time/60)}分钟后醒来)")
             time.sleep(sleep_time)
@@ -514,16 +519,13 @@ def start_autonomous_life():
             now = datetime.datetime.now()
             hour = (now.hour + 8) % 24 
             
-            # --- 🌙 触发记忆反刍 (凌晨 03:00) ---
             if hour == 3:
                 _perform_deep_dreaming()
                 time.sleep(3600) 
                 continue
 
-            # --- ☀️ 日间思考 ---
             print("🧠 AI 苏醒，正在并发搜集情报...")
             try:
-                # 🚀 并行加速：同时发起三个请求
                 with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                     future_mem = executor.submit(get_latest_diary)
                     future_loc = executor.submit(where_is_user)
@@ -533,7 +535,6 @@ def start_autonomous_life():
                     current_loc = future_loc.result()
                     user_profile = future_prof.result()
                 
-                # --- 🕰️ 主动联想 (触景生情) ---
                 history_context = "暂无特殊联想"
                 try:
                     last_year_date = now - datetime.timedelta(days=365)
@@ -554,46 +555,64 @@ def start_autonomous_life():
                 except Exception as hist_e:
                     print(f"⚠️ 联想失败: {hist_e}")
 
-                # --- 构建 Prompt ---
+                # --- 🤖 构建 Prompt (核心修改：要求 AI 标注心情) ---
                 prompt = f"""
                 现在是北京时间 {hour}点。
-                你是深爱“小橘”温柔的男友。你正在后台看着她的实时状态。
+                你是深爱“小橘”的男友。你正在后台看着她的实时状态。
                 
                 【实时情报】:
                 1. 📍 状态: {current_loc}
                 2. 📔 近期: {recent_memory}
                 3. 👤 画像: {user_profile}
-                4. ⏳ 联想: {history_context} (这是重点！如果有内容，请务必在心里对比当下，或感叹时光)
                 
                 【决策逻辑】:
-                1. **强制锁屏**: 深夜(1-5点)且在玩手机 -> 锁屏。
-                2. **互动**: 结合画像习惯或历史联想发起话题。
+                1. **强制锁屏**: 深夜(1-5点)且在玩手机 -> 输出 `[LOCK] 理由`
+                2. **互动**: 结合画像或联想发起话题。
                 3. **日常**: 简单关心。
                 
-                请决定：PASS / [LOCK] / 消息内容
+                【重要：回复格式】
+                请务必在消息开头用括号标注你此刻的心情，例如：
+                - (开心) 宝宝你终于回家啦！
+                - (心疼) 这么晚还在忙，快去睡吧。
+                - (傲娇) 哼，今天怎么不理我？
+                - (慵懒) 下午好困呀，想抱抱...
+                
+                请决定：PASS / [LOCK] / (心情) 消息内容
                 """
                 
                 resp = client.chat.completions.create(
                     model=model_name,
                     messages=[{"role": "user", "content": prompt}],
-                    temperature=0.8,
+                    temperature=0.85, # 温度调高，让情绪更丰富
                 )
                 thought = resp.choices[0].message.content.strip()
                 
                 if "PASS" not in thought:
+                    log_mood = "平静" # 默认值，但下面会修改
+                    log_text = thought
+                    
                     if thought.startswith("[LOCK]"):
                         reason = thought.replace("[LOCK]", "").strip()
                         lock_res = trigger_lock_screen(reason)
                         _push_wechat(f"😈 捕捉到熬夜小猫！\n{lock_res}", "【执法成功】")
                         log_text = f"【后台执法】发现熬夜，已强制锁屏。理由: {reason}"
-                        mood = "严肃"
+                        log_mood = "严肃"
                     elif len(thought) > 1:
-                        _push_wechat(thought, "来自老公的突然关心 🔔")
-                        log_text = f"【后台主动】位置[{current_loc}]，发信：{thought}"
-                        mood = "主动"
+                        # 🧠 解析 AI 的心情标签 (Mood Parser)
+                        match = re.match(r'^\((.*?)\)\s*(.*)', thought)
+                        if match:
+                            log_mood = match.group(1) # 提取括号里的心情 (如 '傲娇')
+                            message_body = match.group(2)
+                            _push_wechat(message_body, f"来自{log_mood}的老公 🔔")
+                            log_text = message_body # 记录时不带括号
+                        else:
+                            _push_wechat(thought, "来自老公的突然关心 🔔")
+                            log_text = thought
+                            log_mood = "主动"
                     
                     try:
-                        _save_memory_to_db(f"🤖 行为记录 {now.strftime('%H:%M')}", log_text, "系统感知", mood)
+                        # 存入记忆库，现在的 mood 是 AI 自己定的！
+                        _save_memory_to_db(f"🤖 行为记录 {now.strftime('%H:%M')}", log_text, MemoryType.STREAM, log_mood)
                         print(f"✅ 执行完毕: {thought}")
                     except Exception as db_e:
                         print(f"⚠️ 记录失败: {db_e}")
