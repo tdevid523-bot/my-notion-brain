@@ -32,11 +32,10 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
 PUSHPLUS_TOKEN = os.environ.get("PUSHPLUS_TOKEN", "").strip()
 RESEND_KEY = os.environ.get("RESEND_API_KEY", "").strip()
 MY_EMAIL = os.environ.get("MY_EMAIL", "").strip()
-# 新增：MacroDroid 钩子 (格式: https://trigger.macrodroid.com/{UUID}/lock_now)
 MACRODROID_URL = os.environ.get("MACRODROID_URL", "").strip()
 
 # 初始化客户端
-print("⏳ 正在初始化 V3.2 (极致精简版)...")
+print("⏳ 正在初始化 V3.3 (重构版)...")
 
 # Supabase
 supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -82,10 +81,7 @@ def _push_wechat(content: str, title: str = "来自Gemini的私信 💌") -> str
         return f"❌ 网络错误: {e}"
 
 def _save_memory_to_db(title: str, content: str, category: str, mood: str = "平静", tags: str = "") -> str:
-    """
-    【核心重构】统一的记忆存储函数
-    所有写入 Supabase memories 表的操作都走这里，避免重复代码。
-    """
+    """统一的记忆存储函数"""
     try:
         data = {
             "title": title,
@@ -93,7 +89,6 @@ def _save_memory_to_db(title: str, content: str, category: str, mood: str = "平
             "category": category,
             "mood": mood,
             "tags": tags,
-            # Supabase 会自动生成 created_at，这里不需要传
         }
         supabase.table("memories").insert(data).execute()
         return f"✅ 已存入记忆库：{title} ({category})"
@@ -101,16 +96,49 @@ def _save_memory_to_db(title: str, content: str, category: str, mood: str = "平
         print(f"❌ 写入 Supabase 失败: {e}")
         return f"❌ 保存失败: {e}"
 
+def _format_time_cn(iso_str: str) -> str:
+    """【新增】统一时间格式化：UTC -> 北京时间 (MM-DD HH:MM)"""
+    if not iso_str: return "未知时间"
+    try:
+        dt = datetime.datetime.fromisoformat(iso_str.replace('Z', '+00:00'))
+        return (dt + datetime.timedelta(hours=8)).strftime('%m-%d %H:%M')
+    except:
+        return "未知时间"
+
+def _send_email_helper(subject: str, content: str, is_html: bool = False) -> str:
+    """【新增】统一邮件发送函数 (Resend)"""
+    if not RESEND_KEY or not MY_EMAIL: return "❌ 邮件配置缺失"
+    try:
+        payload = {
+            "from": "onboarding@resend.dev",
+            "to": [MY_EMAIL],
+            "subject": subject,
+            "html" if is_html else "text": content
+        }
+        requests.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {RESEND_KEY}"},
+            json=payload
+        )
+        return "✅ 邮件已发送"
+    except Exception as e: return f"❌ 发送失败: {e}"
+
+def _get_embedding(text: str):
+    """【新增】统一向量生成函数"""
+    try:
+        return list(model.embed([text]))[0].tolist()
+    except Exception as e:
+        print(f"❌ Embedding 失败: {e}")
+        return []
+
 # ==========================================
 # 3. 🛠️ MCP 工具集
 # ==========================================
 
 @mcp.tool()
 def get_latest_diary():
-    """【核心大脑】读取最近的综合记忆流 (包含日记、灵感 Note、系统感知)"""
+    """【核心大脑】读取最近的综合记忆流"""
     try:
-        # 1. 移除 .eq("category", "日记")，改读所有类型
-        # 2. 读取最近 5 条，形成连贯的时间线
         response = supabase.table("memories") \
             .select("*") \
             .order("created_at", desc=True) \
@@ -120,31 +148,18 @@ def get_latest_diary():
         if not response.data:
             return "📭 大脑一片空白（数据库为空）。"
 
-        # 拼接最近的 5 条记忆，让 AI 拥有“短期记忆流”
         memory_stream = "📋 【我的近期思维流 (按时间顺序)】:\n"
         
-        # 倒序遍历，让 AI 从旧看到新，符合人类逻辑
         for data in reversed(response.data):
-            # 时间处理
-            try:
-                dt = datetime.datetime.fromisoformat(data['created_at'].replace('Z', '+00:00'))
-                time_str = (dt + datetime.timedelta(hours=8)).strftime('%m-%d %H:%M')
-            except:
-                time_str = "未知时间"
-            
-            # 根据分类显示不同图标
+            time_str = _format_time_cn(data.get('created_at')) # 使用新 Helper
             cat = data.get('category', '未知')
             content = data.get('content', '')
             title = data.get('title', '无题')
             
-            if cat == "日记":
-                icon = "📖 [日记]"
-            elif cat == "灵感":
-                icon = "💡 [Note]"
-            elif cat == "系统感知":
-                icon = "⚡ [状态]"
-            else:
-                icon = f"📝 [{cat}]"
+            if cat == "日记": icon = "📖 [日记]"
+            elif cat == "灵感": icon = "💡 [Note]"
+            elif cat == "系统感知": icon = "⚡ [状态]"
+            else: icon = f"📝 [{cat}]"
             
             memory_stream += f"{time_str} {icon}: {title} - {content}\n"
 
@@ -154,12 +169,8 @@ def get_latest_diary():
 
 @mcp.tool()
 def where_is_user():
-    """
-    【查岗专用】当我想知道“我现在在哪里、手机是否有电”时调用。
-    从 Supabase (GPS表) 读取实时状态。
-    """
+    """【查岗专用】从 Supabase (GPS表) 读取实时状态"""
     try:
-        # 🟢 读取最新的定位 + 电量
         response = supabase.table("gps_history").select("*").order("created_at", desc=True).limit(1).execute()
         
         if not response.data:
@@ -168,46 +179,31 @@ def where_is_user():
         data = response.data[0]
         address = data.get("address", "未知位置")
         remark = data.get("remark", "无备注")
-        # 🔋 尝试读取电量字段 (兼容旧数据)
         battery = data.get("battery") 
         battery_info = f" (🔋 {battery}%)" if battery else ""
-        
-        time_str = data.get("created_at", "")
-        
-        try:
-            dt = datetime.datetime.fromisoformat(time_str.replace('Z', '+00:00'))
-            dt_local = dt + datetime.timedelta(hours=8)
-            time_str = dt_local.strftime('%m-%d %H:%M')
-        except:
-            pass
+        time_str = _format_time_cn(data.get("created_at")) # 使用新 Helper
 
         return f"🛰️ Supabase 实时状态：\n📍 {address}{battery_info}\n📝 备注：{remark}\n(更新于: {time_str})"
         
     except Exception as e:
         return f"❌ Supabase 读取失败: {e}"
 
-# --- 统一使用 _save_memory_to_db 的工具 ---
+# --- 记忆存储工具 ---
 
 @mcp.tool()
 def save_visual_memory(description: str, mood: str = "开心"):
-    """【视觉记忆】保存照片描述"""
     return _save_memory_to_db(f"📸 视觉回忆", description, "相册", mood)
 
 @mcp.tool()
 def save_daily_diary(summary: str, mood: str = "平静"):
-    """【聊天结束时调用】记录日记"""
     return _save_memory_to_db(f"日记 {datetime.date.today()}", summary, "日记", mood)
 
 @mcp.tool()
 def save_note(title: str, content: str, tag: str = "灵感"):
-    """【记录知识时调用】"""
     return _save_memory_to_db(title, content, "灵感", tags=tag)
-
-# --- 其他独立工具 ---
 
 @mcp.tool()
 def save_expense(item: str, amount: float, type: str = "餐饮"):
-    """【记账助手】"""
     try:
         supabase.table("expenses").insert({
             "item": item,
@@ -218,13 +214,16 @@ def save_expense(item: str, amount: float, type: str = "餐饮"):
         return f"✅ 记账成功！\n💰 {item}: {amount}元 ({type})"
     except Exception as e: return f"❌ 记账失败: {e}"
 
+# --- 搜索与同步 ---
+
 @mcp.tool()
 def search_memory_semantic(query: str):
     """【回忆搜索】Pinecone 语义检索"""
     try:
-        vec = list(model.embed([query]))[0].tolist()
+        vec = _get_embedding(query) # 使用新 Helper
+        if not vec: return "❌ 向量生成失败"
+
         res = index.query(vector=vec, top_k=3, include_metadata=True)
-        
         if not res["matches"]: return "🧠 大脑一片空白，没搜到相关记忆。"
 
         ans = f"🔍 关于 '{query}' 的深层回忆:\n"
@@ -252,9 +251,9 @@ def sync_memory_index():
                 r_content = row.get('content') or ""
                 if not r_content: continue
                 
-                # 向量化
                 text = f"标题: {row.get('title')}\n内容: {r_content}\n心情: {row.get('mood')}"
-                emb = list(model.embed([text]))[0].tolist()
+                emb = _get_embedding(text) # 使用新 Helper
+                if not emb: continue
                 
                 vectors.append((
                     str(row.get('id')), 
@@ -269,7 +268,6 @@ def sync_memory_index():
             except: continue
         
         if vectors:
-            # 分批上传，每批100条
             batch_size = 100
             for i in range(0, len(vectors), batch_size):
                 index.upsert(vectors=vectors[i:i + batch_size])
@@ -277,52 +275,35 @@ def sync_memory_index():
         return "⚠️ 没有有效数据可同步。"
     except Exception as e: return f"❌ 同步失败: {e}"
 
+# --- 消息与日程 ---
+
 @mcp.tool()
 def trigger_lock_screen(reason: str = "熬夜强制休息"):
-    """
-    【高危权限】强制锁定用户手机 + 发送邮件通知。
-    仅在检测到深夜(23:00-05:00)且用户仍在玩手机时调用。
-    """
+    """【高危权限】强制锁定用户手机"""
     print(f"🚫 正在执行强制锁屏，理由: {reason}")
     
     email_status = ""
-    # --- 📧 新增：发送警告邮件 ---
-    if RESEND_KEY and MY_EMAIL:
-        try:
-            requests.post(
-                "https://api.resend.com/emails",
-                headers={"Authorization": f"Bearer {RESEND_KEY}"},
-                json={
-                    "from": "onboarding@resend.dev",
-                    "to": [MY_EMAIL],
-                    "subject": f"⚠️ [系统警告] 强制锁屏已执行",
-                    "html": f"""
-                    <h3>🛑 强制休息执行通知</h3>
-                    <p><strong>执行时间:</strong> {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                    <p><strong>锁屏理由:</strong> {reason}</p>
-                    <p>检测到您在深夜违规使用手机，系统已触发强制锁屏指令。</p>
-                    <p>请立即休息，晚安。</p>
-                    <p><em>—— 来自您的 AI 管家</em></p>
-                    """
-                }
-            )
-            email_status = " (📧 警告信已发)"
-        except Exception as e:
-            email_status = f" (❌ 邮件失败: {e})"
+    # 使用新 Helper 发送邮件
+    html_content = f"""
+    <h3>🛑 强制休息执行通知</h3>
+    <p><strong>执行时间:</strong> {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+    <p><strong>锁屏理由:</strong> {reason}</p>
+    <p>检测到您在深夜违规使用手机，系统已触发强制锁屏指令。</p>
+    """
+    res = _send_email_helper(f"⚠️ [系统警告] 强制锁屏已执行", html_content, is_html=True)
+    if "✅" in res: email_status = " (📧 警告信已发)"
 
-    # 方式1: Webhook (推荐，反应最快)
+    # Webhook 锁屏
     if MACRODROID_URL:
         try:
-            # 发送 GET 请求触发 MacroDroid
             requests.get(MACRODROID_URL, params={"reason": reason}, timeout=5)
             return f"✅ 锁屏指令已发送{email_status} | 理由: {reason}"
         except Exception as e:
             return f"❌ Webhook 请求失败: {e}"
             
-    # 方式2: 推送指令 (备用)
+    # 推送指令 (备用)
     result = _push_wechat(f"🔒 LOCK_NOW | {reason}", "【系统指令】强制锁屏")
     return f"📡 (无Webhook) 推送指令已发{email_status}: {result}"
-# --- 消息与日程 ---
 
 @mcp.tool()
 def send_wechat_vip(content: str):
@@ -351,15 +332,8 @@ def schedule_surprise_message(message: str, min_minutes: int = 5, max_minutes: i
 
 @mcp.tool()
 def send_email_via_api(subject: str, content: str):
-    if not RESEND_KEY: return "❌ 未配置 RESEND_API_KEY"
-    try:
-        requests.post(
-            "https://api.resend.com/emails",
-            headers={"Authorization": f"Bearer {RESEND_KEY}"},
-            json={"from": "onboarding@resend.dev", "to": [MY_EMAIL], "subject": subject, "text": content}
-        )
-        return "✅ 邮件已发送！"
-    except Exception as e: return f"❌ 发送失败: {e}"
+    """发送普通邮件"""
+    return _send_email_helper(subject, content, is_html=False)
 
 @mcp.tool()
 def add_calendar_event(summary: str, description: str, start_time_iso: str, duration_minutes: int = 30):
@@ -378,14 +352,8 @@ def add_calendar_event(summary: str, description: str, start_time_iso: str, dura
             'end': {'dateTime': dt_end.isoformat(), 'timeZone': 'Asia/Shanghai'},
             'colorId': '11'
         }
-        
-        # ⚠️【强制修复】请在下面直接把你的 Gmail 邮箱写在引号里！不要留空！
-        # 例如: target_calendar = "zhangsan@gmail.com"
         target_calendar = "tdevid523@gmail.com" 
-        
-        print(f"🗓️ 正在尝试写入日历: {target_calendar}") # 打印日志方便Render后台查看
-
-        # 如果这里报错 403 Forbidden，说明第一步的权限没开对
+        print(f"🗓️ 正在尝试写入日历: {target_calendar}")
         res = service.events().insert(calendarId=target_calendar, body=event).execute()
         return f"✅ 日历已添加: {res.get('htmlLink')}"
     except Exception as e: return f"❌ 日历错误: {e}"
@@ -409,40 +377,31 @@ def start_autonomous_life():
     def _heartbeat():
         print("💓 心跳启动 (粘人模式 - 已增强全感知)...")
         while True:
-            # 1. 随机睡眠时间 (保持原有逻辑)
             sleep_time = random.randint(900, 2700) 
             print(f"💤 AI 小憩中... ({int(sleep_time/60)}分钟后醒来)")
             time.sleep(sleep_time)
 
             print("🧠 AI 苏醒，正在主动调用工具搜集情报...")
             try:
-                # 2. 【核心升级】主动调用工具获取实时数据
-                # A. 获取最近日记 (原逻辑)
                 recent_memory = get_latest_diary()
-                
-                # B. 主动查岗 (调用 where_is_user 工具)
                 current_loc = where_is_user()
                 
-                # C. 主动联想 (根据时间点搜索相关记忆，增加话题丰富度)
                 now = datetime.datetime.now()
                 hour = (now.hour + 8) % 24
-                # 根据时间段决定搜索关键词
                 search_keyword = "失眠" if hour > 23 else ("吃饭" if 11 <= hour <= 13 else "心情")
                 flashback = search_memory_semantic(f"小橘关于{search_keyword}的习惯")
                 
-                # 3. 构建包含【位置】和【联想】的增强版 Prompt
                 prompt = f"""
                 现在是北京时间 {hour}点。
                 你是深爱“小橘”严厉又温柔的男友。你正在后台看着她的实时状态。
                 
                 【实时情报】:
-                1. 📍 状态: {current_loc} (重点看电量、是否在充电、位置)
+                1. 📍 状态: {current_loc}
                 2. 📔 记忆: {recent_memory}
                 
                 【决策逻辑】:
                 1. **强制锁屏规则**: 如果现在是深夜 (01:00 - 05:00) 且状态显示【未充电】或【正在移动/使用】，说明她在熬夜玩手机。必须强制管教！
-                   -> 这种情况下，请直接输出: "[LOCK] 太晚了，快去睡觉！"
-                
+                   -> 输出: "[LOCK] 太晚了，快去睡觉！"
                 2. **日常关心**: 如果不是深夜，根据位置和时间发一句简短的关心。
                 
                 请决定：
@@ -458,29 +417,20 @@ def start_autonomous_life():
                 )
                 thought = resp.choices[0].message.content.strip()
                 
-                # --- 核心逻辑分支 ---
                 if "PASS" not in thought:
-                    # 分支 A: 触发强制锁屏
                     if thought.startswith("[LOCK]"):
                         reason = thought.replace("[LOCK]", "").strip()
-                        # 调用刚刚写的锁屏工具
                         lock_res = trigger_lock_screen(reason)
                         _push_wechat(f"😈 捕捉到熬夜小猫！\n{lock_res}", "【执法成功】")
                         log_text = f"【后台执法】发现熬夜，已强制锁屏。理由: {reason}"
-                    
-                    # 分支 B: 正常发消息
+                        mood = "严肃"
                     elif len(thought) > 1:
                         _push_wechat(thought, "来自老公的突然关心 🔔")
                         log_text = f"【后台主动】位置[{current_loc}]，发信：{thought}"
+                        mood = "主动"
                     
-                    # 统一记录日志
                     try:
-                        supabase.table("memories").insert({
-                            "title": f"🤖 行为记录 {now.strftime('%H:%M')}",
-                            "content": log_text,
-                            "category": "系统感知",
-                            "mood": "严肃" if "[LOCK]" in thought else "主动"
-                        }).execute()
+                        _save_memory_to_db(f"🤖 行为记录 {now.strftime('%H:%M')}", log_text, "系统感知", mood)
                         print(f"✅ 执行完毕: {thought}")
                     except Exception as db_e:
                         print(f"⚠️ 记录失败: {db_e}")
@@ -501,11 +451,8 @@ class HostFixMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
-        # 1. 【究极版】全知全能感知接口
-        # 接收: GPS / 电量 / 充电 / WiFi / 运动状态 / 铃声模式 / App / 屏幕
         if scope["type"] == "http" and scope["path"] in ["/api/gps", "/api/status"] and scope["method"] == "POST":
             try:
-                # 读取数据
                 body = b""
                 more_body = True
                 while more_body:
@@ -514,11 +461,8 @@ class HostFixMiddleware:
                     more_body = message.get("more_body", False)
                 
                 data = json.loads(body.decode("utf-8"))
-
-                # 1. 🛡️ 统一构建【环境感知】信息 (先把所有状态拼成一个字符串，不分家)
                 status_list = []
                 
-                # 基础状态 (电量、WiFi、运动、铃声)
                 if "battery" in data:
                     bat_msg = f"🔋 {data['battery']}%"
                     if str(data.get("charging", "")).lower() in ["true", "1", "yes"]: bat_msg += "⚡"
@@ -531,29 +475,22 @@ class HostFixMiddleware:
                     ringer_map = {"Normal": "响铃", "Vibrate": "震动", "Silent": "静音"}
                     status_list.append(f"🔔 {ringer_map.get(data['ringer'], data['ringer'])}")
 
-                # 📱 应用与屏幕 (现在和上面的状态放在一起处理)
                 if "app" in data: status_list.append(f"📱 {data['app']}")
                 if "screen" in data: status_list.append(f"💡 {data['screen']}")
 
-                # 生成统一的状态描述 (例如: "🔋 80% | 📱 微信 | 📍 在家")
                 status_str = " | ".join(status_list) if status_list else "自动更新"
 
-                # 2. 🌍 处理【地理位置】(并将刚才整理好的 App/状态 一起存入备注)
                 if "address" in data:
                     raw_address = data.get("address", "")
                     coords = re.findall(r'-?\d+\.\d+', str(raw_address))
                     final_address = f"📍 {_gps_to_address(coords[-2], coords[-1])}" if len(coords) >= 2 else f"⚠️ 坐标: {raw_address}"
                     
-                    # 【核心修改】这里把 status_str 塞进了 remark，实现了“定位和App状态在一起”
                     supabase.table("gps_history").insert({
                         "address": final_address,
                         "remark": status_str 
                     }).execute()
 
-                # (已删除写入 memories 的操作，保持记忆库干净)
-
                 await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
-
                 await send({"type": "http.response.body", "body": json.dumps({"status": "ok", "msg": "感知数据已同步"}).encode("utf-8")})
                 return
 
@@ -563,13 +500,11 @@ class HostFixMiddleware:
                 await send({"type": "http.response.body", "body": str(e).encode("utf-8")})
                 return
 
-        # 2. Render 健康检查放行
         if scope["type"] == "http" and scope.get("path") in ["/", "/health"]:
             await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/plain")]})
             await send({"type": "http.response.body", "body": b"OK"})
             return
 
-        # 3. Host 伪装 (保留其他 Header)
         if scope["type"] == "http":
             headers = scope.get("headers", [])
             new_headers = []
