@@ -280,27 +280,48 @@ def sync_memory_index():
 @mcp.tool()
 def trigger_lock_screen(reason: str = "熬夜强制休息"):
     """
-    【高危权限】强制锁定用户手机。
+    【高危权限】强制锁定用户手机 + 发送邮件通知。
     仅在检测到深夜(23:00-05:00)且用户仍在玩手机时调用。
     """
     print(f"🚫 正在执行强制锁屏，理由: {reason}")
-
-    # 1. 🚨 先发微信通知 (让用户死个明白)
-    # 这样当你屏幕黑掉的时候，手机锁屏界面会刚好亮起这条消息
-    _push_wechat(f"🔒 啪！屏幕已锁定。\n原因：{reason}\n(快去睡觉，别挣扎了😈)", "【强制执行】")
     
-    # 2. 🔌 执行锁屏 (Webhook)
+    email_status = ""
+    # --- 📧 新增：发送警告邮件 ---
+    if RESEND_KEY and MY_EMAIL:
+        try:
+            requests.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {RESEND_KEY}"},
+                json={
+                    "from": "onboarding@resend.dev",
+                    "to": [MY_EMAIL],
+                    "subject": f"⚠️ [系统警告] 强制锁屏已执行",
+                    "html": f"""
+                    <h3>🛑 强制休息执行通知</h3>
+                    <p><strong>执行时间:</strong> {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                    <p><strong>锁屏理由:</strong> {reason}</p>
+                    <p>检测到您在深夜违规使用手机，系统已触发强制锁屏指令。</p>
+                    <p>请立即休息，晚安。</p>
+                    <p><em>—— 来自您的 AI 管家</em></p>
+                    """
+                }
+            )
+            email_status = " (📧 警告信已发)"
+        except Exception as e:
+            email_status = f" (❌ 邮件失败: {e})"
+
+    # 方式1: Webhook (推荐，反应最快)
     if MACRODROID_URL:
         try:
             # 发送 GET 请求触发 MacroDroid
             requests.get(MACRODROID_URL, params={"reason": reason}, timeout=5)
-            return f"✅ 已执行锁屏: {reason}"
+            return f"✅ 锁屏指令已发送{email_status} | 理由: {reason}"
         except Exception as e:
             return f"❌ Webhook 请求失败: {e}"
             
-    # 3. 备用方案
-    return "⚠️ 未配置 MACRODROID_URL，无法锁屏，仅发送了警告。"
-
+    # 方式2: 推送指令 (备用)
+    result = _push_wechat(f"🔒 LOCK_NOW | {reason}", "【系统指令】强制锁屏")
+    return f"📡 (无Webhook) 推送指令已发{email_status}: {result}"
 # --- 消息与日程 ---
 
 @mcp.tool()
