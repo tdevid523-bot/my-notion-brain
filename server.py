@@ -195,36 +195,76 @@ def search_memory_semantic(query: str):
 
 @mcp.tool()
 def add_calendar_event(summary: str, description: str, start_time_iso: str, duration_minutes: int = 30):
-    """【谷歌日历】修复版：自动处理时间格式错误"""
-    if not GOOGLE_CREDS: return "❌ 未配置谷歌凭证"
+    """【谷歌日历】究极稳定版：增加格式清洗与错误诊断"""
+    # 1. 打印入参，方便在后台看 AI 到底传了什么进来
+    print(f"📅 正在尝试添加日历: {start_time_iso} | {summary}") 
+    
+    if not GOOGLE_CREDS: 
+        return "❌ 错误：环境变量 GOOGLE_CREDENTIALS_JSON 未配置。"
+    
     try:
-        creds = service_account.Credentials.from_service_account_info(
-            json.loads(GOOGLE_CREDS), scopes=['https://www.googleapis.com/auth/calendar']
-        )
+        # 2. 凭证解析（增加容错，防止 JSON 格式错误）
+        try:
+            creds_dict = json.loads(GOOGLE_CREDS)
+            creds = service_account.Credentials.from_service_account_info(
+                creds_dict, scopes=['https://www.googleapis.com/auth/calendar']
+            )
+        except json.JSONDecodeError:
+            return "❌ 错误：环境变量里的 GOOGLE_CREDENTIALS_JSON 不是有效的 JSON 格式（请检查是否多复制了引号或漏了括号）。"
+
         service = build('calendar', 'v3', credentials=creds)
         
-        # 🔥 核心修复：暴力清洗时间格式
-        clean_time = start_time_iso.replace("Z", "").replace("T", " ").split(".")[0].strip()
-        try:
-            dt_start = datetime.datetime.fromisoformat(clean_time)
-        except ValueError:
-            dt_start = datetime.datetime.fromisoformat(clean_time.replace(" ", "T")) # 再试一次
+        # 3. 时间清洗（暴力兼容各种 AI 产生的奇葩格式）
+        # 将 "2025/02/11", "2025-02-11T...", "2025.02.11" 统统标准化，去掉 Z 和 T
+        clean_str = start_time_iso.replace("/", "-").replace(".", "-").replace("Z", "").replace("T", " ").strip()
+        # 去掉可能存在的毫秒 (e.g. 12:00:00.000)
+        clean_str = clean_str.split(".")[0]
+
+        dt_start = None
+        # 定义一堆可能的格式，轮询尝试解析
+        formats = [
+            "%Y-%m-%d %H:%M:%S", # 2025-02-11 12:00:00 (最标准)
+            "%Y-%m-%d %H:%M",    # 2025-02-11 12:00 (无秒)
+            "%Y-%m-%d%H:%M:%S",  # 2025-02-1112:00:00 (紧凑)
+        ]
+        
+        for fmt in formats:
+            try:
+                dt_start = datetime.datetime.strptime(clean_str, fmt)
+                break # 成功就跳出
+            except ValueError:
+                continue
+        
+        # 如果上面都失败，尝试最后的 fallback
+        if not dt_start:
+            # 如果只有日期没有时间 (len=10), 默认设为早上9点
+            if len(clean_str) == 10:
+                clean_str += " 09:00:00"
+                dt_start = datetime.datetime.strptime(clean_str, "%Y-%m-%d %H:%M:%S")
+            else:
+                # 最后试一次 ISO
+                dt_start = datetime.datetime.fromisoformat(clean_str.replace(" ", "T"))
 
         dt_end = dt_start + datetime.timedelta(minutes=duration_minutes)
         
-        # 重建标准格式
+        # 4. 发送请求 (不带时区偏移，强制指定 Asia/Shanghai)
         event = {
-            'summary': summary, 'description': description,
+            'summary': summary, 
+            'description': description,
+            # 关键：这里只传不带时区的字符串，让 timeZone 参数去决定，防止时区打架
             'start': {'dateTime': dt_start.isoformat(), 'timeZone': 'Asia/Shanghai'},
             'end': {'dateTime': dt_end.isoformat(), 'timeZone': 'Asia/Shanghai'},
             'colorId': '11'
         }
+        
         res = service.events().insert(calendarId='primary', body=event).execute()
         return f"✅ 日历已添加: {summary} ({dt_start.strftime('%m-%d %H:%M')})"
+        
     except Exception as e: 
-        print(f"Cal Error: {e}")
-        return f"❌ 日历失败: {e}"
-
+        import traceback
+        traceback.print_exc() # 在后台打印详细报错堆栈，方便我不行的时候截图给我看
+        return f"❌ 日历添加失败: {e}"
+    
 # 其他小工具保持原样
 @mcp.tool()
 def send_wechat_vip(content: str): return _push_wechat(content)
