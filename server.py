@@ -105,23 +105,50 @@ def _save_memory_to_db(title: str, content: str, category: str, mood: str = "平
 
 @mcp.tool()
 def get_latest_diary():
-    """从 Supabase 读取最近一次日记"""
+    """【核心大脑】读取最近的综合记忆流 (包含日记、灵感 Note、系统感知)"""
     try:
+        # 1. 移除 .eq("category", "日记")，改读所有类型
+        # 2. 读取最近 5 条，形成连贯的时间线
         response = supabase.table("memories") \
             .select("*") \
-            .eq("category", "日记") \
             .order("created_at", desc=True) \
-            .limit(1) \
+            .limit(5) \
             .execute()
 
         if not response.data:
-            return "📭 还没有写过日记（数据库为空）。"
+            return "📭 大脑一片空白（数据库为空）。"
 
-        data = response.data[0]
-        date_str = data['created_at'].split('T')[0] 
-        return f"📖 上次记忆 ({date_str}):\n【{data['title']}】\n{data['content']}\n(心情: {data.get('mood','平静')})"
+        # 拼接最近的 5 条记忆，让 AI 拥有“短期记忆流”
+        memory_stream = "📋 【我的近期思维流 (按时间顺序)】:\n"
+        
+        # 倒序遍历，让 AI 从旧看到新，符合人类逻辑
+        for data in reversed(response.data):
+            # 时间处理
+            try:
+                dt = datetime.datetime.fromisoformat(data['created_at'].replace('Z', '+00:00'))
+                time_str = (dt + datetime.timedelta(hours=8)).strftime('%m-%d %H:%M')
+            except:
+                time_str = "未知时间"
+            
+            # 根据分类显示不同图标
+            cat = data.get('category', '未知')
+            content = data.get('content', '')
+            title = data.get('title', '无题')
+            
+            if cat == "日记":
+                icon = "📖 [日记]"
+            elif cat == "灵感":
+                icon = "💡 [Note]"
+            elif cat == "系统感知":
+                icon = "⚡ [状态]"
+            else:
+                icon = f"📝 [{cat}]"
+            
+            memory_stream += f"{time_str} {icon}: {title} - {content}\n"
+
+        return memory_stream
     except Exception as e:
-        return f"❌ 读取日记失败: {e}"
+        return f"❌ 读取记忆流失败: {e}"
 
 @mcp.tool()
 def where_is_user():
