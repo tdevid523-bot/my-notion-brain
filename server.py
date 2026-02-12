@@ -195,75 +195,69 @@ def search_memory_semantic(query: str):
 
 @mcp.tool()
 def add_calendar_event(summary: str, description: str, start_time_iso: str, duration_minutes: int = 30):
-    """【谷歌日历】究极稳定版：增加格式清洗与错误诊断"""
-    # 1. 打印入参，方便在后台看 AI 到底传了什么进来
+    """【谷歌日历】修复版：支持指定日历ID与错误透传"""
     print(f"📅 正在尝试添加日历: {start_time_iso} | {summary}") 
     
     if not GOOGLE_CREDS: 
         return "❌ 错误：环境变量 GOOGLE_CREDENTIALS_JSON 未配置。"
     
     try:
-        # 2. 凭证解析（增加容错，防止 JSON 格式错误）
+        # 1. 凭证解析（增加容错，处理可能的单引号问题）
         try:
-            creds_dict = json.loads(GOOGLE_CREDS)
+            # 尝试修复 JSON 格式（有些平台复制粘贴会把双引号变单引号）
+            fixed_creds = GOOGLE_CREDS.replace("'", '"')
+            creds_dict = json.loads(fixed_creds)
             creds = service_account.Credentials.from_service_account_info(
                 creds_dict, scopes=['https://www.googleapis.com/auth/calendar']
             )
-        except json.JSONDecodeError:
-            return "❌ 错误：环境变量里的 GOOGLE_CREDENTIALS_JSON 不是有效的 JSON 格式（请检查是否多复制了引号或漏了括号）。"
+        except json.JSONDecodeError as e:
+            return f"❌ JSON 格式错误: {str(e)}。请检查 GOOGLE_CREDENTIALS_JSON 是否包含完整的花括号，且使用双引号。"
 
         service = build('calendar', 'v3', credentials=creds)
         
-        # 3. 时间清洗（暴力兼容各种 AI 产生的奇葩格式）
-        # 将 "2025/02/11", "2025-02-11T...", "2025.02.11" 统统标准化，去掉 Z 和 T
+        # 2. 时间清洗 (保持你原有的逻辑，看起来没问题)
         clean_str = start_time_iso.replace("/", "-").replace(".", "-").replace("Z", "").replace("T", " ").strip()
-        # 去掉可能存在的毫秒 (e.g. 12:00:00.000)
         clean_str = clean_str.split(".")[0]
 
         dt_start = None
-        # 定义一堆可能的格式，轮询尝试解析
-        formats = [
-            "%Y-%m-%d %H:%M:%S", # 2025-02-11 12:00:00 (最标准)
-            "%Y-%m-%d %H:%M",    # 2025-02-11 12:00 (无秒)
-            "%Y-%m-%d%H:%M:%S",  # 2025-02-1112:00:00 (紧凑)
-        ]
+        formats = ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d%H:%M:%S"]
         
         for fmt in formats:
             try:
                 dt_start = datetime.datetime.strptime(clean_str, fmt)
-                break # 成功就跳出
-            except ValueError:
-                continue
+                break 
+            except ValueError: continue
         
-        # 如果上面都失败，尝试最后的 fallback
         if not dt_start:
-            # 如果只有日期没有时间 (len=10), 默认设为早上9点
             if len(clean_str) == 10:
                 clean_str += " 09:00:00"
                 dt_start = datetime.datetime.strptime(clean_str, "%Y-%m-%d %H:%M:%S")
             else:
-                # 最后试一次 ISO
                 dt_start = datetime.datetime.fromisoformat(clean_str.replace(" ", "T"))
 
         dt_end = dt_start + datetime.timedelta(minutes=duration_minutes)
         
-        # 4. 发送请求 (不带时区偏移，强制指定 Asia/Shanghai)
-        event = {
+        # 3. 确定日历 ID (核心修改！！！)
+        # 如果配置了 MY_EMAIL，就往那个邮箱的日历写。否则往机器人的 primary 写。
+        target_calendar_id = MY_EMAIL if MY_EMAIL else 'primary'
+        print(f"🎯 目标日历 ID: {target_calendar_id}")
+
+        event_body = {
             'summary': summary, 
             'description': description,
-            # 关键：这里只传不带时区的字符串，让 timeZone 参数去决定，防止时区打架
             'start': {'dateTime': dt_start.isoformat(), 'timeZone': 'Asia/Shanghai'},
             'end': {'dateTime': dt_end.isoformat(), 'timeZone': 'Asia/Shanghai'},
-            'colorId': '11'
         }
         
-        res = service.events().insert(calendarId='primary', body=event).execute()
-        return f"✅ 日历已添加: {summary} ({dt_start.strftime('%m-%d %H:%M')})"
+        # 4. 执行插入
+        res = service.events().insert(calendarId=target_calendar_id, body=event_body).execute()
+        return f"✅ 日历已添加: {summary} ({dt_start.strftime('%m-%d %H:%M')}) -> {target_calendar_id}"
         
     except Exception as e: 
         import traceback
-        traceback.print_exc() # 在后台打印详细报错堆栈，方便我不行的时候截图给我看
-        return f"❌ 日历添加失败: {e}"
+        traceback.print_exc() 
+        # 把具体的错误信息返回给 AI，这样它能告诉你错在哪
+        return f"❌ Google API 报错: {str(e)}"
     
 # 其他小工具保持原样
 @mcp.tool()
