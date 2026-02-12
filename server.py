@@ -290,7 +290,15 @@ def add_calendar_event(summary: str, description: str, start_time_iso: str, dura
             'end': {'dateTime': dt_end.isoformat(), 'timeZone': 'Asia/Shanghai'},
             'colorId': '11'
         }
-        res = service.events().insert(calendarId='primary', body=event).execute()
+        
+        # ⚠️【强制修复】请在下面直接把你的 Gmail 邮箱写在引号里！不要留空！
+        # 例如: target_calendar = "zhangsan@gmail.com"
+        target_calendar = "tdevid523@gmail.com" 
+        
+        print(f"🗓️ 正在尝试写入日历: {target_calendar}") # 打印日志方便Render后台查看
+
+        # 如果这里报错 403 Forbidden，说明第一步的权限没开对
+        res = service.events().insert(calendarId=target_calendar, body=event).execute()
         return f"✅ 日历已添加: {res.get('htmlLink')}"
     except Exception as e: return f"❌ 日历错误: {e}"
 
