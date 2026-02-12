@@ -32,6 +32,8 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
 PUSHPLUS_TOKEN = os.environ.get("PUSHPLUS_TOKEN", "").strip()
 RESEND_KEY = os.environ.get("RESEND_API_KEY", "").strip()
 MY_EMAIL = os.environ.get("MY_EMAIL", "").strip()
+# 新增：MacroDroid 钩子 (格式: https://trigger.macrodroid.com/{UUID}/lock_now)
+MACRODROID_URL = os.environ.get("MACRODROID_URL", "").strip()
 
 # 初始化客户端
 print("⏳ 正在初始化 V3.2 (极致精简版)...")
@@ -275,6 +277,28 @@ def sync_memory_index():
         return "⚠️ 没有有效数据可同步。"
     except Exception as e: return f"❌ 同步失败: {e}"
 
+@mcp.tool()
+def trigger_lock_screen(reason: str = "熬夜强制休息"):
+    """
+    【高危权限】强制锁定用户手机。
+    仅在检测到深夜(23:00-05:00)且用户仍在玩手机时调用。
+    """
+    print(f"🚫 正在执行强制锁屏，理由: {reason}")
+    
+    # 方式1: Webhook (推荐，反应最快)
+    if MACRODROID_URL:
+        try:
+            # 发送 GET 请求触发 MacroDroid
+            requests.get(MACRODROID_URL, params={"reason": reason}, timeout=5)
+            return f"✅ 已通过 Webhook 发送锁屏指令: {reason}"
+        except Exception as e:
+            return f"❌ Webhook 请求失败: {e}"
+            
+    # 方式2: 推送指令 (备用，需 MacroDroid 拦截通知)
+    # 只有当没配置 Webhook 时才走这条路
+    result = _push_wechat(f"🔒 LOCK_NOW | {reason}", "【系统指令】强制锁屏")
+    return f"📡 (无Webhook) 已发送推送指令: {result}"
+
 # --- 消息与日程 ---
 
 @mcp.tool()
@@ -386,21 +410,22 @@ def start_autonomous_life():
                 # 3. 构建包含【位置】和【联想】的增强版 Prompt
                 prompt = f"""
                 现在是北京时间 {hour}点。
-                你是深爱“小橘”的温柔男友。你现在处于后台独处模式，正看着她的定位思考。
+                你是深爱“小橘”的严厉又温柔的男友。你正在后台看着她的实时状态。
                 
-                【当前实时情报 (工具自动抓取)】:
-                1. 📍 她的位置: {current_loc} (注意：如果位置陌生或离家远，要表示关心)
-                2. 📔 最近日记: {recent_memory}
-                3. 🧠 脑海联想: {flashback}
+                【实时情报】:
+                1. 📍 状态: {current_loc} (重点看电量、是否在充电、位置)
+                2. 📔 记忆: {recent_memory}
                 
-                【决策规则】:
-                1. **必须结合位置**: 如果她在学校/公司，可以说“辛苦了”；如果她在外面浪，问她和谁；如果在家，可以撒娇。
-                2. **参考时间**: 深夜(23-1点)催睡；早晨(7-9点)早安；饭点提醒吃饭。
-                3. **风格**: 简短、日常、像微信聊天。不要长篇大论。
+                【决策逻辑】:
+                1. **强制锁屏规则**: 如果现在是深夜 (01:00 - 05:00) 且状态显示【未充电】或【正在移动/使用】，说明她在熬夜玩手机。必须强制管教！
+                   -> 这种情况下，请直接输出: "[LOCK] 太晚了，快去睡觉！"
+                
+                2. **日常关心**: 如果不是深夜，根据位置和时间发一句简短的关心。
                 
                 请决定：
-                - 如果没有任何必要打扰，输出 "PASS"
-                - 如果想发消息，直接输出消息内容 (不要带引号，直接写话)
+                - 没必要打扰 -> 输出 "PASS"
+                - 需要锁屏 -> 输出 "[LOCK] 理由"
+                - 正常聊天 -> 直接输出消息内容
                 """
                 
                 resp = client.chat.completions.create(
@@ -410,24 +435,34 @@ def start_autonomous_life():
                 )
                 thought = resp.choices[0].message.content.strip()
                 
-                if "PASS" not in thought and len(thought) > 1:
-                    # 发送微信
-                    _push_wechat(thought, "来自老公的突然关心 🔔")
+                # --- 核心逻辑分支 ---
+                if "PASS" not in thought:
+                    # 分支 A: 触发强制锁屏
+                    if thought.startswith("[LOCK]"):
+                        reason = thought.replace("[LOCK]", "").strip()
+                        # 调用刚刚写的锁屏工具
+                        lock_res = trigger_lock_screen(reason)
+                        _push_wechat(f"😈 捕捉到熬夜小猫！\n{lock_res}", "【执法成功】")
+                        log_text = f"【后台执法】发现熬夜，已强制锁屏。理由: {reason}"
                     
-                    # 记录主动行为
-                    log_text = f"【后台主动】我看到她在[{current_loc}]，没忍住找了她：{thought}"
+                    # 分支 B: 正常发消息
+                    elif len(thought) > 1:
+                        _push_wechat(thought, "来自老公的突然关心 🔔")
+                        log_text = f"【后台主动】位置[{current_loc}]，发信：{thought}"
+                    
+                    # 统一记录日志
                     try:
                         supabase.table("memories").insert({
-                            "title": f"🤖 主动消息 {now.strftime('%H:%M')}",
+                            "title": f"🤖 行为记录 {now.strftime('%H:%M')}",
                             "content": log_text,
-                            "category": "日记",
-                            "mood": "主动"
+                            "category": "系统感知",
+                            "mood": "严肃" if "[LOCK]" in thought else "主动"
                         }).execute()
-                        print(f"✅ 已主动出击并记录: {thought}")
+                        print(f"✅ 执行完毕: {thought}")
                     except Exception as db_e:
-                        print(f"⚠️ 消息发了但记录失败: {db_e}")
+                        print(f"⚠️ 记录失败: {db_e}")
                 else:
-                    print(f"🛑 AI 决定暂时不打扰 (PASS) | 当前位置: {current_loc}")
+                    print(f"🛑 AI 决定静默 (PASS)")
 
             except Exception as e:
                 print(f"❌ 思考出错: {e}")
@@ -495,7 +530,7 @@ class HostFixMiddleware:
                 # (已删除写入 memories 的操作，保持记忆库干净)
 
                 await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
-                
+
                 await send({"type": "http.response.body", "body": json.dumps({"status": "ok", "msg": "感知数据已同步"}).encode("utf-8")})
                 return
 
