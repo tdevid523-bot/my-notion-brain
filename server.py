@@ -374,8 +374,8 @@ class HostFixMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
-        # 1. 【升级】全能感知接口 (支持 GPS / 电量 / App / 屏幕状态)
-        # 兼容旧版 /api/gps，建议 MacroDroid 改用 /api/status
+        # 1. 【究极版】全知全能感知接口
+        # 接收: GPS / 电量 / 充电 / WiFi / 运动状态 / 铃声模式 / App / 屏幕
         if scope["type"] == "http" and scope["path"] in ["/api/gps", "/api/status"] and scope["method"] == "POST":
             try:
                 # 读取数据
@@ -388,43 +388,59 @@ class HostFixMiddleware:
                 
                 data = json.loads(body.decode("utf-8"))
                 
-                # --- A. 如果有位置信息 -> 存入 gps_history 表 ---
+                # --- A. 地理位置 (存入 gps_history) ---
                 if "address" in data:
                     raw_address = data.get("address", "")
                     coords = re.findall(r'-?\d+\.\d+', str(raw_address))
-                    if len(coords) >= 2:
-                        final_address = f"📍 {_gps_to_address(coords[-2], coords[-1])}"
-                    else:
-                        final_address = f"⚠️ 坐标: {raw_address}"
+                    final_address = f"📍 {_gps_to_address(coords[-2], coords[-1])}" if len(coords) >= 2 else f"⚠️ 坐标: {raw_address}"
                     
-                    # 写入位置表
                     supabase.table("gps_history").insert({
                         "address": final_address,
                         "remark": data.get("remark", "自动更新")
                     }).execute()
 
-                # --- B. 如果有手机状态 (电量/App) -> 存入 memories 表 (供 AI 思考用) ---
-                status_info = []
-                if "battery" in data:
-                    status_info.append(f"🔋 电量: {data['battery']}%")
-                if "app" in data:
-                    status_info.append(f"📱 正在使用: {data['app']}")
-                if "screen" in data:
-                    status_info.append(f"💡 屏幕: {data['screen']}")
+                # --- B. 环境感知 (存入 memories 供 AI 思考) ---
+                status_list = []
                 
-                # 只有当状态信息存在时，才写入记忆库，分类为“系统感知”
-                if status_info:
-                    content = " | ".join(status_info)
-                    # 调用全局 helper 存入 Supabase，这样 AI 的“自主思考”读取最近记忆时就能看到！
-                    _save_memory_to_db(f"手机状态 {datetime.datetime.now().strftime('%H:%M')}", content, "系统感知", "🤖")
+                # 1. 电量与充电
+                if "battery" in data:
+                    bat_msg = f"🔋 电量: {data['battery']}%"
+                    if str(data.get("charging", "")).lower() in ["true", "1", "yes"]:
+                        bat_msg += " (⚡充电中)"
+                    status_list.append(bat_msg)
+                
+                # 2. WiFi 环境 (判断是在家还是外出)
+                if "wifi" in data and data["wifi"]:
+                    status_list.append(f"📶 WiFi: {data['wifi']}")
 
-                # 返回成功
+                # 3. 运动状态 (MacroDroid 识别: Still/Walking/In Vehicle)
+                if "activity" in data and data["activity"]:
+                    act_map = {"Still": "静止", "Walking": "步行中", "In Vehicle": "乘车/开车", "Running": "跑步", "On Bicycle": "骑行"}
+                    act_raw = data['activity']
+                    status_list.append(f"🏃 状态: {act_map.get(act_raw, act_raw)}")
+
+                # 4. 铃声模式 (Normal/Vibrate/Silent)
+                if "ringer" in data:
+                    ringer_map = {"Normal": "响铃", "Vibrate": "震动", "Silent": "静音"}
+                    r_raw = data['ringer']
+                    status_list.append(f"🔔 模式: {ringer_map.get(r_raw, r_raw)}")
+
+                # 5. 屏幕与应用
+                if "app" in data: status_list.append(f"📱由于: {data['app']}")
+                if "screen" in data: status_list.append(f"💡屏幕: {data['screen']}")
+
+                # 写入记忆库
+                if status_list:
+                    full_content = " | ".join(status_list)
+                    # 记录带有详细时间戳的感知信息
+                    _save_memory_to_db(f"系统感知 {datetime.datetime.now().strftime('%H:%M')}", full_content, "系统感知", "🤖")
+
                 await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
-                await send({"type": "http.response.body", "body": json.dumps({"status": "ok", "msg": "已接收感知数据"}).encode("utf-8")})
+                await send({"type": "http.response.body", "body": json.dumps({"status": "ok", "msg": "感知数据已同步"}).encode("utf-8")})
                 return
 
             except Exception as e:
-                print(f"❌ 数据上报失败: {e}")
+                print(f"❌ 感知接口报错: {e}")
                 await send({"type": "http.response.start", "status": 500, "headers": []})
                 await send({"type": "http.response.body", "body": str(e).encode("utf-8")})
                 return
