@@ -374,9 +374,11 @@ class HostFixMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
-        # 1. 【新增】拦截手机 GPS 请求 -> 存入 Supabase
-        if scope["type"] == "http" and scope["path"] == "/api/gps" and scope["method"] == "POST":
+        # 1. 【升级】全能感知接口 (支持 GPS / 电量 / App / 屏幕状态)
+        # 兼容旧版 /api/gps，建议 MacroDroid 改用 /api/status
+        if scope["type"] == "http" and scope["path"] in ["/api/gps", "/api/status"] and scope["method"] == "POST":
             try:
+                # 读取数据
                 body = b""
                 more_body = True
                 while more_body:
@@ -385,25 +387,44 @@ class HostFixMiddleware:
                     more_body = message.get("more_body", False)
                 
                 data = json.loads(body.decode("utf-8"))
-                raw_address = data.get("address", "")
                 
-                # --- 🤖 AI 智能解析 (修复了变量赋值冗余) ---
-                coords = re.findall(r'-?\d+\.\d+', str(raw_address))
-                if len(coords) >= 2:
-                    final_address = f"📍 {_gps_to_address(coords[-2], coords[-1])}"
-                else:
-                    final_address = f"⚠️ 坐标不完整: {raw_address}"
+                # --- A. 如果有位置信息 -> 存入 gps_history 表 ---
+                if "address" in data:
+                    raw_address = data.get("address", "")
+                    coords = re.findall(r'-?\d+\.\d+', str(raw_address))
+                    if len(coords) >= 2:
+                        final_address = f"📍 {_gps_to_address(coords[-2], coords[-1])}"
+                    else:
+                        final_address = f"⚠️ 坐标: {raw_address}"
+                    
+                    # 写入位置表
+                    supabase.table("gps_history").insert({
+                        "address": final_address,
+                        "remark": data.get("remark", "自动更新")
+                    }).execute()
 
-                supabase.table("gps_history").insert({
-                    "address": final_address,
-                    "remark": data.get("remark", "自动更新")
-                }).execute()
+                # --- B. 如果有手机状态 (电量/App) -> 存入 memories 表 (供 AI 思考用) ---
+                status_info = []
+                if "battery" in data:
+                    status_info.append(f"🔋 电量: {data['battery']}%")
+                if "app" in data:
+                    status_info.append(f"📱 正在使用: {data['app']}")
+                if "screen" in data:
+                    status_info.append(f"💡 屏幕: {data['screen']}")
                 
+                # 只有当状态信息存在时，才写入记忆库，分类为“系统感知”
+                if status_info:
+                    content = " | ".join(status_info)
+                    # 调用全局 helper 存入 Supabase，这样 AI 的“自主思考”读取最近记忆时就能看到！
+                    _save_memory_to_db(f"手机状态 {datetime.datetime.now().strftime('%H:%M')}", content, "系统感知", "🤖")
+
+                # 返回成功
                 await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
-                await send({"type": "http.response.body", "body": json.dumps({"status": "ok", "location": final_address}).encode("utf-8")})
+                await send({"type": "http.response.body", "body": json.dumps({"status": "ok", "msg": "已接收感知数据"}).encode("utf-8")})
                 return
+
             except Exception as e:
-                print(f"❌ GPS 处理失败: {e}")
+                print(f"❌ 数据上报失败: {e}")
                 await send({"type": "http.response.start", "status": 500, "headers": []})
                 await send({"type": "http.response.body", "body": str(e).encode("utf-8")})
                 return
