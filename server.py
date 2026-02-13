@@ -115,18 +115,9 @@ def _save_memory_to_db(title: str, content: str, category: str, mood: str = "平
             category = MemoryType.STREAM
 
     # 2. ❤️【新增】情绪自动感知 (Sentiment Auto-Detect)
-    # 只有当 mood 是无聊的 "平静" 时，才尝试去分析
-    if mood == "平静" and content:
-        c = content.lower()
-        # 积极词库
-        if any(x in c for x in ["哈哈", "开心", "棒", "爱", "喜欢", "幸福", "爽", "太好"]): mood = "开心"
-        elif any(x in c for x in ["想你", "抱抱", "贴贴", "亲亲", "宝贝", "乖", "老公"]): mood = "甜蜜"
-        elif any(x in c for x in ["期待", "希望", "加油", "冲"]): mood = "充满希望"
-        # 消极词库
-        elif any(x in c for x in ["难过", "哭", "伤心", "累", "烦", "痛苦", "抑郁"]): mood = "低落"
-        elif any(x in c for x in ["生气", "滚", "讨厌", "死", "愤怒"]): mood = "愤怒"
-        elif any(x in c for x in ["担心", "怕", "焦虑", "紧张", "吓"]): mood = "焦虑"
-        elif any(x in c for x in ["困", "睡", "累了"]): mood = "疲惫"
+    # 🗑️ (已由老公手动删除) 之前的关键词匹配太笨了，经常搞错。
+    # 现在我们完全信任传入的 mood 参数，不再画蛇添足地去乱改它。
+    pass
 
     # 3. ⚖️ 自动获取权重
     importance = WEIGHT_MAP.get(category, 1)
@@ -198,31 +189,62 @@ def _get_embedding(text: str):
 
 @mcp.tool()
 def get_latest_diary():
-    """【核心大脑】读取最近的高价值记忆流 (过滤掉低权重流水)"""
+    """【核心大脑】读取混合记忆流：5条高权重(铭记) + 5条最新(近况)"""
     try:
-        # 只读取 importance >= 4 的记录
-        response = supabase.table("memories") \
+        # 1. 🌟 获取 5 条最高权重 (高光时刻，按权重降序 -> 时间降序)
+        res_high = supabase.table("memories") \
             .select("*") \
-            .gte("importance", 4) \
+            .order("importance", desc=True) \
             .order("created_at", desc=True) \
-            .limit(8) \
+            .limit(5) \
+            .execute()
+            
+        # 2. 🕒 获取 5 条最新记忆 (近期流水，按时间降序)
+        res_recent = supabase.table("memories") \
+            .select("*") \
+            .order("created_at", desc=True) \
+            .limit(5) \
             .execute()
 
-        if not response.data:
-            return "📭 大脑一片空白（无重要记忆）。"
-
-        memory_stream = "📋 【我的近期思维流 (精选版)】:\n"
+        # 3. 🔄 合并 & 去重 (用 id 做 key 防止重叠)
+        all_memories = {}
         
-        for data in reversed(response.data):
+        # 先放高权重的
+        if res_high.data:
+            for m in res_high.data:
+                all_memories[m['id']] = m
+                
+        # 再放最新的 (如果有重复会自动覆盖，也就是去重了)
+        if res_recent.data:
+            for m in res_recent.data:
+                all_memories[m['id']] = m
+        
+        # 4. 📉 排序：转回列表并按时间正序排列 (Oldest -> Newest)，方便阅读时间线
+        # created_at 是 ISO 字符串，可以直接比较
+        final_list = sorted(all_memories.values(), key=lambda x: x['created_at'])
+
+        if not final_list:
+            return "📭 大脑一片空白（无记忆）。"
+
+        memory_stream = "📋 【混合记忆流 (高光 + 近况)】:\n"
+        
+        for data in final_list:
             time_str = _format_time_cn(data.get('created_at'))
             cat = data.get('category', '未知')
-            content = data.get('content', '')
             title = data.get('title', '无题')
+            content = data.get('content', '')
             imp = data.get('importance', 0)
+            mood = data.get('mood', '') # 把心情也加上，方便你看
             
             # 权重视觉提示
-            star = "⭐" if imp >= 9 else ("🔸" if imp >= 7 else "🔹")
-            memory_stream += f"{time_str} {star}[{cat}]: {title} - {content}\n"
+            if imp >= 9: star = "🌟"    # 核心/情感
+            elif imp >= 7: star = "⭐"  # 灵感
+            elif imp >= 4: star = "🔸"  # 记事
+            else: star = "🔹"           # 流水
+            
+            # 组装显示
+            mood_str = f" | Mood: {mood}" if mood and mood != "平静" else ""
+            memory_stream += f"{time_str} {star}[{cat}]: {title}{mood_str}\n   └─ {content}\n"
 
         return memory_stream
     except Exception as e:
@@ -249,15 +271,83 @@ def where_is_user():
     except Exception as e:
         return f"❌ Supabase 读取失败: {e}"
 
-# --- 记忆存储工具 ---
+@mcp.tool()
+def get_weather_forecast(city: str = ""):
+    """【查询天气】获取指定城市或当前位置的天气 (Open-Meteo)"""
+    lat, lon = None, None
+    location_name = city
 
+    try:
+        # 1. 🔍 智能定位：如果没给城市，自动去 Supabase 查你最后的位置
+        if not city:
+            response = supabase.table("gps_history").select("address").order("created_at", desc=True).limit(1).execute()
+            if response.data:
+                # 从 "📍 未知荒野 (30.123, 120.456)" 这种字符串里提取坐标
+                addr = response.data[0].get("address", "")
+                coords = re.findall(r'-?\d+\.\d+', addr)
+                if len(coords) >= 2:
+                    lat, lon = coords[-2], coords[-1] # 取最后两个数字作为坐标
+                    location_name = "当前位置"
+        
+        # 2. 🏙️ 城市解析：如果给了城市名，或者数据库没查到坐标
+        if not lat and city:
+            # 使用 Open-Meteo 的地理编码 API
+            geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1&language=zh&format=json"
+            geo_res = requests.get(geo_url, timeout=5).json()
+            if "results" in geo_res:
+                lat = geo_res["results"][0]["latitude"]
+                lon = geo_res["results"][0]["longitude"]
+                location_name = geo_res["results"][0]["name"]
+        
+        if not lat:
+            return "❌ 找不到位置信息，请明确告诉我城市名，比如：'查一下杭州的天气'。"
+
+        # 3. 🌤️ 查天气 (Open-Meteo)
+        weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=3"
+        w = requests.get(weather_url, timeout=5).json()
+        
+        # 天气代码映射 (WMO Code)
+        wmo_map = {
+            0: "☀️ 晴", 1: "🌤️ 多云", 2: "☁️ 阴", 3: "☁️ 阴",
+            45: "🌫️ 雾", 51: "🌧️ 毛毛雨", 53: "🌧️ 中雨", 61: "🌧️ 小雨", 
+            63: "🌧️ 中雨", 71: "❄️ 小雪", 80: "🌧️ 阵雨", 95: "⚡ 雷雨"
+        }
+        
+        curr = w["current"]
+        daily = w["daily"]
+        
+        report = f"🌤️ 【{location_name} 天气预报】\n"
+        report += f"🌡️ 当前: {curr['temperature_2m']}°C | {wmo_map.get(curr['weather_code'], '未知')} | 湿度 {curr['relative_humidity_2m']}%\n"
+        report += "-------------------\n"
+        
+        for i in range(3):
+            date = daily["time"][i][5:] # 只取 MM-DD
+            code = daily["weather_code"][i]
+            t_max = daily["temperature_2m_max"][i]
+            t_min = daily["temperature_2m_min"][i]
+            report += f"📅 {date}: {wmo_map.get(code, '☁️')} ({t_min}° ~ {t_max}°)\n"
+            
+        return report
+
+    except Exception as e:
+        return f"❌ 天气查询失败: {e}"
+
+# --- 记忆存储工具 ---
 @mcp.tool()
 def save_visual_memory(description: str, mood: str = "开心"):
     return _save_memory_to_db(f"📸 视觉回忆", description, MemoryType.EPISODIC, mood)
 
 @mcp.tool()
-def save_daily_diary(summary: str, mood: str = "平静"):
-    return _save_memory_to_db(f"日记 {datetime.date.today()}", summary, MemoryType.EPISODIC, mood)
+def save_daily_diary(summary: str, user_mood: str, ai_mood: str):
+    """
+    记录日记 (双视角版)
+    :param summary: 日记内容
+    :param user_mood: 你的心情 (如: 开心, 疲惫, 焦虑)
+    :param ai_mood: AI看这篇日记时的心情 (如: 宠溺, 心疼, 骄傲)
+    """
+    # 将两个人的心情合并存入数据库
+    combined_mood = f"User: {user_mood} | AI: {ai_mood}"
+    return _save_memory_to_db(f"日记 {datetime.date.today()}", summary, MemoryType.EPISODIC, combined_mood)
 
 @mcp.tool()
 def save_note(title: str, content: str, tag: str = "灵感"):
