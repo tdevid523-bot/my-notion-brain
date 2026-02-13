@@ -337,6 +337,59 @@ def get_weather_forecast(city: str = ""):
         return report
     except Exception as e: return f"❌ 天气查询失败: {e}"
 
+@mcp.tool()
+def tarot_reading(question: str):
+    """【塔罗占卜】解决选择困难，抽取三张牌（过去/现在/未来）由AI解读"""
+    try:
+        # 1. 定义大阿卡纳牌组 (22张)
+        deck = [
+            "0. 愚者 (The Fool) - 冒险、新的开始", "I. 魔术师 (The Magician) - 创造、行动",
+            "II. 女祭司 (The High Priestess) - 直觉、秘密", "III. 皇后 (The Empress) - 丰盛、关爱",
+            "IV. 皇帝 (The Emperor) - 权威、秩序", "V. 教皇 (The Hierophant) - 传统、指引",
+            "VI. 恋人 (The Lovers) - 选择、结合", "VII. 战车 (The Chariot) - 意志、胜利",
+            "VIII. 力量 (Strength) - 勇气、耐心", "IX. 隐士 (The Hermit) - 探索、内省",
+            "X. 命运之轮 (Wheel of Fortune) - 改变、机遇", "XI. 正义 (Justice) - 决策、因果",
+            "XII. 倒吊人 (The Hanged Man) - 牺牲、新视角", "XIII. 死神 (Death) - 结束、重生",
+            "XIV. 节制 (Temperance) - 平衡、沟通", "XV. 魔鬼 (The Devil) - 束缚、欲望",
+            "XVI. 高塔 (The Tower) - 突变、觉醒", "XVII. 星星 (The Star) - 希望、灵感",
+            "XVIII. 月亮 (The Moon) - 不安、潜意识", "XIX. 太阳 (The Sun) - 成功、快乐",
+            "XX. 审判 (Judgement) - 召唤、复活", "XXI. 世界 (The World) - 完成、圆满"
+        ]
+        
+        # 2. 随机抽牌 (正位/逆位 简化为只看正位，聚焦核心寓意)
+        draw = random.sample(deck, 3)
+        
+        # 3. 呼叫 AI 进行解读
+        api_key = os.environ.get("OPENAI_API_KEY")
+        base_url = os.environ.get("OPENAI_BASE_URL")
+        if not api_key: return f"🔮 抽到的牌是：{', '.join(draw)}。\n(⚠️ AI未配置，无法解读)"
+
+        client = OpenAI(api_key=api_key, base_url=base_url)
+        persona = _get_current_persona()
+        
+        prompt = f"""
+        当前人设：{persona}
+        场景：女朋友因为 "{question}" 感到纠结，想通过塔罗牌找点方向。
+        抽牌结果：
+        1. 根源/过去: {draw[0]}
+        2. 现状/问题: {draw[1]}
+        3. 建议/未来: {draw[2]}
+        
+        请你化身“懂玄学”的男友，结合牌意给出一小段解读和建议。
+        语气要温柔、坚定，带一点点神秘感，最后要帮她下个决心（或者告诉她跟随内心）。
+        不要长篇大论，控制在200字以内。
+        """
+        
+        resp = client.chat.completions.create(
+            model=os.environ.get("OPENAI_MODEL_NAME", "gpt-3.5-turbo"),
+            messages=[{"role": "user", "content": prompt}], temperature=0.8
+        )
+        
+        interpretation = resp.choices[0].message.content.strip()
+        return f"🔮 【塔罗指引】\n🃏 牌阵: {draw[0]} | {draw[1]} | {draw[2]}\n\n💬 {interpretation}"
+
+    except Exception as e: return f"❌ 占卜失败: {e}"
+
 # --- ✨ 优化后的通用记忆工具 ---
 @mcp.tool()
 def save_memory(content: str, category: str = "记事", title: str = "无题", mood: str = "平静"):
