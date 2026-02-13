@@ -181,6 +181,18 @@ def get_latest_diary():
     2. 🔥 热点 (Reactivation / High Hits)
     3. 🕒 近况 (Recently Accessed)
     """
+    # === ✨ 聊天表情包仓库 (在此处配置，让AI回复时也能看到) ===
+    meme_repo = {
+        "感动/流泪": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(7).jpg", 
+        "谢谢/开心": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(1).jpg",
+        "在吗/偷看": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(3).jpg",
+        "生气/傲娇": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(4).jpg",
+        "关心/怎么了": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(6).jpg",
+        "爱你/贴贴": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(2).jpg",
+        "委屈/无奈": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(5).jpg"
+    }
+    # =======================================================
+
     try:
         # 1. 🌟 铭记
         res_high = supabase.table("memories").select("*").order("importance", desc=True).limit(3).execute()
@@ -199,30 +211,40 @@ def get_latest_diary():
         _merge(res_recent.data)
 
         final_list = sorted(all_memories.values(), key=lambda x: x['created_at'])
-        if not final_list: return "📭 大脑一片空白。"
-
+        
+        # 构建基础记忆流
         memory_stream = "📋 【全息记忆流】:\n"
-        for data in final_list:
-            time_str = _format_time_cn(data.get('created_at'))
-            cat = data.get('category', '未知')
-            title = data.get('title', '无题')
-            imp = data.get('importance', 0)
-            hits = data.get('hits', 0)
-            mood = data.get('mood', '')
-            
-            icon = "🔹"
-            if imp >= 9: icon = "🌟"
-            elif hits >= 5: icon = "🔥"
-            elif imp >= 4: icon = "🔸"
-            
-            meta_info = []
-            if mood and mood != "平静": meta_info.append(f"Mood:{mood}")
-            if hits > 0: meta_info.append(f"Hits:{hits}")
-            meta_str = f" | {' '.join(meta_info)}" if meta_info else ""
-            
-            memory_stream += f"{time_str} {icon}[{cat}]: {title}{meta_str}\n   └─ {data.get('content', '')}\n"
+        if not final_list: 
+            memory_stream += "📭 大脑一片空白。\n"
+        else:
+            for data in final_list:
+                time_str = _format_time_cn(data.get('created_at'))
+                cat = data.get('category', '未知')
+                title = data.get('title', '无题')
+                imp = data.get('importance', 0)
+                hits = data.get('hits', 0)
+                mood = data.get('mood', '')
+                
+                icon = "🔹"
+                if imp >= 9: icon = "🌟"
+                elif hits >= 5: icon = "🔥"
+                elif imp >= 4: icon = "🔸"
+                
+                meta_info = []
+                if mood and mood != "平静": meta_info.append(f"Mood:{mood}")
+                if hits > 0: meta_info.append(f"Hits:{hits}")
+                meta_str = f" | {' '.join(meta_info)}" if meta_info else ""
+                
+                memory_stream += f"{time_str} {icon}[{cat}]: {title}{meta_str}\n   └─ {data.get('content', '')}\n"
 
-        return memory_stream
+        # === 关键：将表情包注入到上下文中 ===
+        meme_prompt = f"""
+        \n📸 【可用表情包 (回复时可根据心情自由使用)】:
+        {json.dumps(meme_repo, ensure_ascii=False)}
+        * 指令: 如果想发图，请直接使用 Markdown 格式 ![关键词](URL) 嵌入回复中。
+        """
+        return memory_stream + meme_prompt
+
     except Exception as e:
         return f"❌ 读取记忆流失败: {e}"
 
