@@ -701,6 +701,9 @@ class HostFixMiddleware:
                 # 拼接状态字符串
                 stats = []
                 if "battery" in data: stats.append(f"🔋 {data['battery']}%" + ("⚡" if str(data.get("charging")).lower() in ["true","1"] else ""))
+                if "screen" in data: stats.append(f"💡 {data['screen']}")   # 补全：亮屏状态
+                if "app" in data and data["app"]: stats.append(f"📱 {data['app']}")      # 补全：前台 App
+                if "volume" in data: stats.append(f"🔊 {data['volume']}%") # 补全：音量
                 if "wifi" in data and data["wifi"]: stats.append(f"📶 {data['wifi']}")
                 if "activity" in data and data["activity"]: stats.append(f"🏃 {data['activity']}")
                 
