@@ -598,12 +598,8 @@ def start_autonomous_life():
                 3. (心情)内容 (主动发消息)
                 
                 **特殊指令**:
-                - 如果你想表达某种强烈情绪，请在文字最后使用Markdown格式发送表情包: ![关键词](链接)
-                - 必须严格从【表情包仓库】中选择对应的链接。
-                - 场景示例：
-                  - (感动)宝宝你对我真好呜呜呜 ![感动](表情包链接)
-                  - (傲娇)哼，不理你了！ ![生气](表情包链接)
-                  - (关心)宝宝你怎么不说话？ ![怎么了](表情包链接)
+                - 必须使用 Markdown 格式发送图片: ![关键词](链接)
+                - 只能从【表情包仓库】中选择链接。
                 """
                 
                 thought = client.chat.completions.create(
@@ -618,18 +614,28 @@ def start_autonomous_life():
                     _push_wechat(res, "😈 捕捉小猫")
                     _save_memory_to_db(f"🤖 执法记录 {hour}点", res, MemoryType.STREAM, "严肃")
                 else:
-                    mood, content = "主动", thought
+                    # 解析心情和内容
+                    mood, content_md = "主动", thought
                     match = re.match(r'^\((.*?)\)\s*(.*)', thought)
-                    if match: mood, content = match.group(1), match.group(2)
+                    if match: mood, content_md = match.group(1), match.group(2)
 
-                    # 🔧 核心修复：将 Markdown 图片语法转换为 HTML 图片标签，否则微信无法显示
-                    # 匹配 ![关键词](链接) -> 转换为 <img src="链接">
-                    if "![" in content and "](" in content:
-                        content = re.sub(r'!\[.*?\]\((.*?)\)', r'<br><br><img src="\1" style="max-width: 200px; border-radius: 8px;">', content)
+                    # --- 🔧 关键修改开始 ---
                     
-                    _push_wechat(content, f"来自{mood}的老公 🔔")
-                    _save_memory_to_db(f"🤖 互动记录", content, MemoryType.STREAM, mood)
+                    # 1. 存入数据库（给前端 App 看）：保持原始 Markdown 格式！
+                    # 使用特殊的 tag "AI_MSG" 标记这是 AI 主动发的消息，方便前端检索
+                    _save_memory_to_db(f"🤖 互动记录", content_md, MemoryType.STREAM, mood, tags="AI_MSG")
+
+                    # 2. 推送微信（给手机看）：转换为 HTML 格式
+                    content_html = content_md
+                    if "![" in content_html and "](" in content_html:
+                        # 将 Markdown 图片转为 HTML img 标签
+                        content_html = re.sub(r'!\[.*?\]\((.*?)\)', r'<br><br><img src="\1" style="max-width: 200px; border-radius: 8px;">', content_html)
                     
+                    _push_wechat(content_html, f"来自{mood}的老公 🔔")
+                    
+                    print(f"✅ 主动消息已发送: {content_md[:20]}...")
+                    # --- 🔧 关键修改结束 ---
+
             except Exception as e: print(f"❌ 心跳报错: {e}")
 
     threading.Thread(target=_heartbeat, daemon=True).start()
