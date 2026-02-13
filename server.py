@@ -241,7 +241,7 @@ def get_latest_diary():
         meme_prompt = f"""
         \n📸 【可用表情包 (回复时可根据心情自由使用)】:
         {json.dumps(meme_repo, ensure_ascii=False)}
-        * 指令: 如果想发图，请直接使用 Markdown 格式 ![关键词](URL) 嵌入回复中。
+        * 指令: 发图时，请严格使用 HTML 格式 <img src="URL" width="200" style="border-radius:10px; margin: 10px 0;" /> 嵌入回复中，禁止使用 Markdown 格式，防止图片过大。
         """
         return memory_stream + meme_prompt
 
