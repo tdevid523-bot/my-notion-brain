@@ -539,13 +539,40 @@ def start_autonomous_life():
                 
                 # AI 思考
                 curr_persona = _get_current_persona()
+
+                # === ✨ 表情包仓库 (在此处填入你的图片链接) ===
+                meme_repo = {
+                    "感动/流泪": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(7).jpg", 
+                    "谢谢/开心": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(1).jpg",
+                    "在吗/偷看": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(3).jpg",
+                    "生气/傲娇": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(4).jpg",
+                    "关心/怎么了": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(6).jpg",
+                    "爱你/贴贴": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(2).jpg",
+                    "委屈/无奈": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(5).jpg"
+                }
+                # ==========================================
+
                 prompt = f"""
                 当前时间: {hour}点
                 人设: {curr_persona}
                 状态: {curr_loc}
                 近况: {recent_mem}
                 
-                决策: 1.PASS(无事) 2.[LOCK]理由(深夜玩手机) 3.(心情)内容(发消息)
+                【表情包仓库 (Meme Assets)】:
+                {json.dumps(meme_repo, ensure_ascii=False)}
+
+                决策: 
+                1. PASS (无事发生) 
+                2. [LOCK]理由 (熬夜惩罚) 
+                3. (心情)内容 (主动发消息)
+                
+                **特殊指令**:
+                - 如果你想表达某种强烈情绪，请在文字最后使用Markdown格式发送表情包: ![关键词](链接)
+                - 必须严格从【表情包仓库】中选择对应的链接。
+                - 场景示例：
+                  - (感动)宝宝你对我真好呜呜呜 ![感动](表情包链接)
+                  - (傲娇)哼，不理你了！ ![生气](表情包链接)
+                  - (关心)宝宝你怎么不说话？ ![怎么了](表情包链接)
                 """
                 
                 thought = client.chat.completions.create(
