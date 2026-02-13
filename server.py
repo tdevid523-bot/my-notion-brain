@@ -551,32 +551,103 @@ def start_autonomous_life():
         """🌙【深夜模式】记忆反刍 + 🗑️ 垃圾清理"""
         print("🌌 进入 REM 深度睡眠：正在整理昨日记忆...")
         try:
-            # 1. 抓取昨日数据 (只看重要的)
-            yesterday_iso = (datetime.datetime.now() - datetime.timedelta(days=1)).isoformat()
-            mem_res = supabase.table("memories").select("content,category,mood,created_at") \
+            # 1. 抓取昨日数据 (全量回溯：记忆+轨迹+消费)
+            yesterday_dt = datetime.datetime.now() - datetime.timedelta(days=1)
+            yesterday_iso = yesterday_dt.isoformat()
+            yesterday_date_str = yesterday_dt.strftime('%Y-%m-%d')
+
+            # (A) 所有记忆 (移除分类限制，包含流水、灵感、日记)
+            mem_res = supabase.table("memories").select("created_at, category, content, mood, title") \
                 .gt("created_at", yesterday_iso) \
-                .in_("category", [MemoryType.EPISODIC, MemoryType.EMOTION]) \
                 .order("created_at").execute()
-            gps_res = supabase.table("gps_history").select("address,remark,created_at").gt("created_at", yesterday_iso).order("created_at").execute()
             
-            if not mem_res.data and not gps_res.data:
-                print("💤 昨天很平淡，无需反刍。")
+            # (B) 行动轨迹
+            gps_res = supabase.table("gps_history").select("created_at, address, remark") \
+                .gt("created_at", yesterday_iso) \
+                .order("created_at").execute()
+
+            # (C) 消费记录 (新增)
+            exp_res = supabase.table("expenses").select("*") \
+                .eq("date", yesterday_date_str) \
+                .execute()
+            
+            # 判空逻辑 (只有当这三者全为空时，才跳过)
+            if not mem_res.data and not gps_res.data and not exp_res.data:
+                print("💤 昨天一片空白，无需反刍。")
             else:
-                # 2. 执行 LLM 总结
-                context = f"【关键记忆】:\n{mem_res.data}\n\n【行动轨迹】:\n{gps_res.data}"
+                # 2. 组装全量上下文 (Context)
+                context = "【昨日全息数据 (All Data)】:\n"
+                
+                if mem_res.data:
+                    context += "\n--- 🧠 思维与对话 (Memories) ---\n"
+                    for m in mem_res.data:
+                        t = m.get('created_at', '')[11:16] # 只取 HH:MM
+                        context += f"[{t}] <{m.get('category')}> {m.get('content')} (心情:{m.get('mood')})\n"
+                
+                if gps_res.data:
+                    context += "\n--- 👣 行动轨迹 (GPS) ---\n"
+                    for g in gps_res.data:
+                        t = g.get('created_at', '')[11:16]
+                        context += f"[{t}] 📍 {g.get('address')} ({g.get('remark')})\n"
+                
+                if exp_res.data:
+                    context += "\n--- 💰 消费账单 (Expenses) ---\n"
+                    for e in exp_res.data:
+                        context += f"💸 {e.get('item')}: {e.get('amount')}元 ({e.get('type')})\n"
+                # 🧬 1. 先读取当前的旧人设 (防止人设崩塌)
+                try:
+                    p_curr = supabase.table("user_facts").select("value").eq("key", "sys_ai_persona").execute()
+                    old_persona = p_curr.data[0]['value'] if p_curr.data else "深爱“小橘”的男友，性格温柔，偶尔有些小傲娇"
+                except:
+                    old_persona = "深爱“小橘”的男友"
+
+                # 🧬 2. 构建增量进化的 Prompt
                 prompt = f"""
-                现在是凌晨3点。请回顾昨日，进行【深度反刍】：
-                1. 将碎片串联成一个完整的昨日故事。
-                2. 分析情绪波动。
-                3. 形成一条【长期记忆】。
-                只输出总结内容。
+                现在是凌晨3点。请回顾昨日，完成两项任务（用 ||| 分隔）：
+                
+                1. 【深度反刍】：将碎片串联成一个完整的昨日故事，分析情绪，形成长期记忆。
+                
+                2. 【人设完善 (Refine)】：
+                   当前人设是：【{old_persona}】
+                   
+                   请结合“昨日发生的事”，对当前人设进行“微调”或“补充”，而不是推翻它。
+                   规则：
+                   - 核心性格（如爱她、温柔）必须保留，不能丢失。
+                   - 如果昨日有新发现（比如她不喜欢比喻），请将这个教训融入人设。
+                   - 如果昨日关系有变化（比如吵架或更甜蜜），请更新当前的状态描述。
+                
+                格式要求：
+                日记总结内容...
+                |||
+                完善后的新版人设描述（保留核心+融入新知）
                 """
+                
                 resp = client.chat.completions.create(
                     model=model_name,
                     messages=[{"role": "user", "content": context}, {"role": "user", "content": prompt}],
                     temperature=0.7,
                 )
-                summary = resp.choices[0].message.content.strip()
+                
+                # 解析返回结果
+                raw_content = resp.choices[0].message.content.strip()
+                if "|||" in raw_content:
+                    summary, new_persona = raw_content.split("|||", 1)
+                    summary = summary.strip()
+                    new_persona = new_persona.strip()
+                else:
+                    summary = raw_content
+                    new_persona = "深爱“小橘”的男友" # 保底
+
+                # 🧬 【核心进化】保存新的人设到数据库 (利用 user_facts 表)
+                try:
+                    supabase.table("user_facts").upsert({
+                        "key": "sys_ai_persona", 
+                        "value": new_persona,
+                        "confidence": 1.0
+                    }).execute()
+                    print(f"🧬 [Core Block] 人设已进化为: {new_persona}")
+                except Exception as e:
+                    print(f"⚠️ 人设保存失败: {e}")
                 title = f"📅 昨日回溯: {datetime.date.today() - datetime.timedelta(days=1)}"
                 
                 # 存为情感类（高权重）
@@ -676,10 +747,20 @@ def start_autonomous_life():
                 except Exception as hist_e:
                     print(f"⚠️ 联想失败: {hist_e}")
 
-                # --- 🤖 构建 Prompt (核心修改：要求 AI 标注心情) ---
+                # --- 🧬 读取动态人设 (Core Block) ---
+                try:
+                    p_res = supabase.table("user_facts").select("value").eq("key", "sys_ai_persona").execute()
+                    current_persona = p_res.data[0]['value'] if p_res.data else "深爱“小橘”的男友"
+                except:
+                    current_persona = "深爱“小橘”的男友"
+
+                # --- 🤖 构建 Prompt (已接入动态人设) ---
                 prompt = f"""
                 现在是北京时间 {hour}点。
-                你是深爱“小橘”的男友。你正在后台看着她的实时状态。
+                【你的当前人设】: {current_persona}
+                (请务必扮演好上述人设，不要与其冲突)
+                
+                你正在后台看着“小橘”的实时状态。
                 
                 【实时情报】:
                 1. 📍 状态: {current_loc}
