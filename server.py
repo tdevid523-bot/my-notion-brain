@@ -558,7 +558,7 @@ def start_autonomous_life():
                 状态: {curr_loc}
                 近况: {recent_mem}
                 
-                【表情包仓库 (Meme Assets)】:
+                【表情包仓库 (必须严格使用以下链接)】:
                 {json.dumps(meme_repo, ensure_ascii=False)}
 
                 决策: 
@@ -566,9 +566,10 @@ def start_autonomous_life():
                 2. [LOCK]理由 (熬夜惩罚) 
                 3. (心情)内容 (主动发消息)
                 
-                **特殊指令**:
-                - 必须使用 Markdown 格式发送图片: ![关键词](链接)
-                - 只能从【表情包仓库】中选择链接。
+                **严格指令**:
+                1. 🚫 绝对禁止自己上网搜索图片 URL，禁止编造链接！
+                2. ✅ 只能从上方的【表情包仓库】JSON 中完全复制 value 字段的 URL。
+                3. 格式要求: (心情) 文字内容 ![表情](这里填仓库里的URL)
                 """
                 
                 thought = client.chat.completions.create(
