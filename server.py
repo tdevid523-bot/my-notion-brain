@@ -491,7 +491,12 @@ def start_autonomous_life():
                 
                 # 存为情感类（高权重）
                 _save_memory_to_db(title, summary, MemoryType.EMOTION, mood="深沉", tags="Core_Cognition")
-                print(f"✅ 记忆反刍完成: {title}")
+                
+                # 📧 【新增】顺便发邮件给你
+                # 这里的 _send_email_helper 是你在前面已经定义好的工具函数
+                email_status = _send_email_helper(title, summary)
+                
+                print(f"✅ 记忆反刍完成: {title} | 邮件投递: {email_status}")
 
             # 3. 记忆环卫工：清理2天前的低权重流水
             print("🧹 正在执行大脑垃圾回收...")
@@ -501,6 +506,13 @@ def start_autonomous_life():
                 .lt("created_at", two_days_ago) \
                 .execute()
             
+            # 👇👇👇 【新增这一段】 👇👇👇
+            print("🧹 正在清理过期的 GPS 轨迹...")
+            # 保留最近 3 天的记录，删除更早的
+            three_days_ago = (datetime.datetime.now() - datetime.timedelta(days=3)).isoformat()
+            supabase.table("gps_history").delete().lt("created_at", three_days_ago).execute()
+            # 👆👆👆 【新增结束】 👆👆👆
+
             if del_res.data:
                 print(f"🗑️ 已清理 {len(del_res.data)} 条低权重流水。")
             else:
@@ -511,6 +523,25 @@ def start_autonomous_life():
 
     def _heartbeat():
         print("💓 心跳启动 (情绪自决模式 - 拒绝冷漠)...")
+
+        # 🛡️ 【新增】补作业机制：启动时检查昨日总结是否存在，不存在则立刻补写
+        try:
+            # 逻辑要和 _perform_deep_dreaming 里的 title 保持完全一致
+            target_date = datetime.date.today() - datetime.timedelta(days=1)
+            target_title = f"📅 昨日回溯: {target_date}"
+            
+            print(f"🕵️‍♂️ 正在核对日记归档: [{target_title}]...")
+            # 查库
+            check_res = supabase.table("memories").select("id").eq("title", target_title).execute()
+            
+            if not check_res.data:
+                print(f"📝 发现漏了昨天的总结，正在立刻补作业...")
+                _perform_deep_dreaming()  # 👈 这里的核心，没写就强制触发一次
+            else:
+                print(f"✨ 昨天的总结已经乖乖躺在数据库里啦。")
+        except Exception as e:
+            print(f"⚠️ 补写检查出错 (不影响主心跳): {e}")
+
         while True:
             sleep_time = random.randint(900, 2700) 
             print(f"💤 AI 小憩中... ({int(sleep_time/60)}分钟后醒来)")
