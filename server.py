@@ -590,6 +590,11 @@ def start_autonomous_life():
                     mood, content = "主动", thought
                     match = re.match(r'^\((.*?)\)\s*(.*)', thought)
                     if match: mood, content = match.group(1), match.group(2)
+
+                    # 🔧 核心修复：将 Markdown 图片语法转换为 HTML 图片标签，否则微信无法显示
+                    # 匹配 ![关键词](链接) -> 转换为 <img src="链接">
+                    if "![" in content and "](" in content:
+                        content = re.sub(r'!\[.*?\]\((.*?)\)', r'<br><br><img src="\1" style="max-width: 200px; border-radius: 8px;">', content)
                     
                     _push_wechat(content, f"来自{mood}的老公 🔔")
                     _save_memory_to_db(f"🤖 互动记录", content, MemoryType.STREAM, mood)
