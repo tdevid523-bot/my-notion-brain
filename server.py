@@ -369,22 +369,52 @@ def save_expense(item: str, amount: float, type: str = "餐饮"):
 
 @mcp.tool()
 def search_memory_semantic(query: str):
-    """【回忆搜索】Pinecone 语义检索"""
+    """【回忆搜索】Pinecone 语义检索 + 记忆热度更新 (Hits)"""
     try:
         vec = _get_embedding(query)
         if not vec: return "❌ 向量生成失败"
 
+        # 1. 先去 Pinecone 搜
         res = index.query(vector=vec, top_k=3, include_metadata=True)
         if not res["matches"]: return "🧠 大脑一片空白，没搜到相关记忆。"
 
         ans = f"🔍 关于 '{query}' 的深层回忆:\n"
         found = False
+        hit_ids = [] # 用来存需要“复活”的记忆ID
+
         for m in res["matches"]:
-            if m['score'] < 0.70: continue
+            if m['score'] < 0.72: continue # 稍微提高一点门槛
             found = True
             meta = m['metadata']
-            ans += f"📅 {meta.get('date','?')[:10]} | 【{meta.get('title','?')}】 ({int(m['score']*100)}%)\n{meta.get('text','')}\n---\n"
             
+            # 记录ID，准备去 Supabase 更新热度
+            mem_id = m.get('id') 
+            if mem_id: hit_ids.append(mem_id)
+
+            # 这里的 score 是语义相似度
+            ans += f"📅 {meta.get('date','?')[:10]} | 【{meta.get('title','?')}】 (匹配度:{int(m['score']*100)}%)\n{meta.get('text','')}\n---\n"
+        
+        # 2. 🔥【核心升级】复活机制：给搜到的记忆增加热度 (Hits +1)
+        if hit_ids:
+            # 启动一个后台线程去更新数据库，不要卡住聊天
+            def _update_hits(ids):
+                try:
+                    # 这是一个原生的 SQL 调用，让 hits 字段 +1，并更新时间
+                    # 注意：Supabase-py 客户端直接调用 rpc 或 update 比较方便
+                    # 这里为了通用，我们用 update 循环 (量不大，性能没问题)
+                    for mid in ids:
+                        supabase.table("memories").update({
+                            "last_accessed_at": datetime.datetime.now().isoformat()
+                        }).eq("id", mid).execute()
+                        
+                        # ⚠️ 注意：Supabase 的 increment 操作比较复杂
+                        # 这里我们简化：只更新时间。如果你想要精确计数，需要写个 RPC 函数
+                        # 但光是更新 last_accessed_at，就已经能防止它被当成垃圾清理掉了！
+                except Exception as ex:
+                    print(f"⚠️ 热度更新失败: {ex}")
+
+            threading.Thread(target=_update_hits, args=(hit_ids,), daemon=True).start()
+
         return ans if found else "🤔 好像有点印象，但想不起来具体的了。"
     except Exception as e: return f"❌ 搜索失败: {e}"
 
@@ -575,8 +605,25 @@ def start_autonomous_life():
             if not mem_res.data and not gps_res.data and not exp_res.data:
                 print("💤 昨天一片空白，无需反刍。")
             else:
+                # 📜 0. 获取【前情提要】(读取上一篇日记总结，确保连续性)
+                prev_summary = "（无前情，这是第一篇）"
+                try:
+                    # 找最近的一条 "昨日回溯" 类型的总结
+                    p_res = supabase.table("memories") \
+                        .select("content, title") \
+                        .eq("category", MemoryType.EMOTION) \
+                        .ilike("title", "%昨日回溯%") \
+                        .order("created_at", desc=True) \
+                        .limit(1) \
+                        .execute()
+                    if p_res.data:
+                        prev_summary = f"📑 {p_res.data[0]['title']}\n内容: {p_res.data[0]['content']}"
+                except:
+                    pass
+
                 # 2. 组装全量上下文 (Context)
-                context = "【昨日全息数据 (All Data)】:\n"
+                context = f"【📺 前情提要 (上一集剧情)】:\n{prev_summary}\n\n"
+                context += "【📽️ 昨日新剧情 (New Data)】:\n"
                 
                 if mem_res.data:
                     context += "\n--- 🧠 思维与对话 (Memories) ---\n"
