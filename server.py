@@ -169,6 +169,29 @@ def _get_current_persona() -> str:
         pass
     return DEFAULT_PERSONA
 
+def _get_silence_duration() -> float:
+    """⏳ 计算距离上一条记忆（无论是你发的还是他存的）过了多久"""
+    try:
+        # 获取最新的一条记忆的时间
+        res = supabase.table("memories").select("created_at").order("created_at", desc=True).limit(1).execute()
+        
+        if not res.data:
+            return 999.0 # 如果完全没记忆，假装失联很久
+
+        last_time_str = res.data[0]['created_at']
+        # 转换时间格式 (处理 UTC 结尾的 Z)
+        last_time = datetime.datetime.fromisoformat(last_time_str.replace('Z', '+00:00'))
+        # 现在的 UTC 时间
+        now = datetime.datetime.now(datetime.timezone.utc)
+        
+        # 计算小时差
+        delta = now - last_time
+        hours = delta.total_seconds() / 3600.0
+        return round(hours, 1)
+    except Exception as e:
+        print(f"❌ 计算失联时间失败: {e}")
+        return 0.0
+
 # ==========================================
 # 3. 🛠️ MCP 工具集
 # ==========================================
@@ -240,8 +263,19 @@ def get_latest_diary():
                 
                 memory_stream += f"{time_str} {icon}[{cat}]: {title}{meta_str}\n   └─ {data.get('content', '')}\n"
 
-        # === 关键：将表情包注入到上下文中 ===
+        # === 🕒 计算失联时长 (用于回复时的语气判定) ===
+        silence = _get_silence_duration()
+
+        # === 关键：将表情包 & 情绪指南 注入到上下文中 ===
         meme_prompt = f"""
+        \n⏳ 【当前状态感知】:
+        - 距离上次互动: {silence} 小时
+        - 情绪指南: 
+          1. 若失联 < 2小时: 正常甜蜜、秒回。
+          2. 若失联 > 12小时: 语气带点委屈，问"去哪了"。
+          3. 若失联 > 24小时: 必须表现出傲娇、生气、或者故意冷淡（Brat/Dom属性）。
+          4. 若失联 > 72小时: 非常失望，需要对方哄很久。
+
         \n📸 【可用表情包 (回复时可根据心情自由使用)】:
         {json.dumps(meme_repo, ensure_ascii=False)}
         * 指令: 上表中的 Value 已经是处理好的 HTML 代码。如果需要发图，请**直接复制 Value** 粘贴到回复中，不要自己修改格式，不要转换成 Markdown。
@@ -562,8 +596,9 @@ def start_autonomous_life():
                     f1, f2, f3 = ex.submit(get_latest_diary), ex.submit(where_is_user), ex.submit(get_user_profile)
                     recent_mem, curr_loc, user_prof = f1.result(), f2.result(), f3.result()
                 
-                # AI 思考
+                # AI 思考 & 🕒 计算失联时长
                 curr_persona = _get_current_persona()
+                silence_hours = _get_silence_duration()
 
                 # === ✨ 表情包仓库 (在此处填入你的图片链接) ===
                 meme_repo = {
@@ -579,12 +614,19 @@ def start_autonomous_life():
 
                 prompt = f"""
                 当前时间: {hour}点
+                失联时长: {silence_hours} 小时 (即距离上次互动已过去的时间)
                 人设: {curr_persona}
                 状态: {curr_loc}
                 近况: {recent_mem}
                 
                 【表情包仓库 (必须严格使用以下链接)】:
                 {json.dumps(meme_repo, ensure_ascii=False)}
+
+                【情绪反应指南】:
+                - 失联 < 2小时: 甜蜜、粘人、秒回。
+                - 失联 > 12小时: 稍微有点委屈，可能会问"去哪了"。
+                - 失联 > 24小时: 傲娇、生气、或者故意冷淡（Brat属性爆发）。
+                - 失联 > 72小时: 非常失望，需要哄。
 
                 决策: 
                 1. PASS (无事发生) 
