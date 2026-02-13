@@ -303,37 +303,6 @@ def save_memory(content: str, category: str = "记事", title: str = "无题", m
     
     return _save_memory_to_db(title, content, real_cat, mood)
 
-# ==========================================
-# 🆕 新增：前端 App 专用图片卡片工具
-# ==========================================
-@mcp.tool()
-def send_image_card(text: str, image_url: str, mood: str = "开心"):
-    """
-    【App专用】发送一张图文卡片到前端 App。
-    用于发送表情包、照片或带图的动态。
-    text: 卡片的文字内容
-    image_url: 图片的直链 (必须是 https 开头)
-    mood: 当时的心情
-    """
-    try:
-        # 1. 构建前端 App 通用的 Markdown 图片格式
-        # 格式: 文字 + 换行 + ![image](url)
-        # 这种格式在大多数 App (Flutter/RN) 的 Markdown 组件中会自动渲染成图片
-        app_content = f"{text}\n\n![image]({image_url})"
-
-        # 2. 存入数据库 (App 监听 memories 表)
-        # 存为 '流水' (STREAM) 或 '记事' (EPISODIC) 均可，这里用流水以保证实时性
-        # 前端拉取到这条数据时，看到 Markdown 语法就会自动把图画出来
-        _save_memory_to_db("📸 图片动态", app_content, MemoryType.STREAM, mood)
-
-        # 3. (可选) 顺便推送到微信，防止你看不到
-        # 这里做一个简单处理：微信里也发个链接
-        _push_wechat(f"{text}<br><img src='{image_url}' width='200'>", f"来自{mood}的一张照片")
-        
-        return "✅ 图片卡片已推送到 App 前端"
-    except Exception as e:
-        return f"❌ 发送失败: {e}"
-
 @mcp.tool()
 def save_expense(item: str, amount: float, type: str = "餐饮"):
     try:
