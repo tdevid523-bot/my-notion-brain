@@ -439,8 +439,9 @@ async def search_memory_semantic(query: str):
             def _update_hits(ids):
                 for mid in ids:
                     try:
-                        supabase.table("memories").update({"last_accessed_at": datetime.datetime.now().isoformat()}).eq("id", mid).execute()
-                    except: pass
+                        supabase.rpc("increment_hits", {"row_id": str(mid)}).execute()
+                    except Exception as e:
+                        print(f"❌ 更新 hits 失败: {e}")
             # 🚀 加速点: 将热度更新作为后台任务直接抛出，不阻塞当前响应
             asyncio.create_task(asyncio.to_thread(_update_hits, hit_ids))
 
