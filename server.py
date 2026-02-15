@@ -367,25 +367,29 @@ async def tarot_reading(question: str):
 
 @mcp.tool()
 async def web_search(query: str):
-    """【联网搜索】通过搜索引擎获取最新网络信息，解决事实性问题"""
+    """【联网搜索】通过 Tavily 搜索引擎获取最新网络信息，解决事实性问题"""
+    api_key = os.environ.get("TAVILY_API_KEY", "").strip()
+    if not api_key:
+        return "❌ 搜索失败: 未在环境变量中配置 TAVILY_API_KEY。"
+
     try:
-        from duckduckgo_search import DDGS
-        def _search(): return DDGS().text(query, max_results=3)
-        results = await asyncio.to_thread(_search)
+        def _search():
+            url = "https://api.tavily.com/search"
+            payload = {"api_key": api_key, "query": query, "search_depth": "basic", "include_answer": False}
+            return requests.post(url, json=payload, timeout=10).json()
+            
+        res = await asyncio.to_thread(_search)
         
-        if not results:
+        if "results" not in res or not res["results"]:
             return f"🌐 关于 '{query}'，没有搜索到相关结果。"
             
         ans = f"🌐 关于 '{query}' 的网络搜索结果:\n\n"
-        for i, res in enumerate(results, 1):
-            ans += f"{i}. 【{res.get('title')}】\n   {res.get('body')}\n   (来源: {res.get('href')})\n\n"
+        for i, item in enumerate(res["results"][:3], 1):
+            ans += f"{i}. 【{item.get('title')}】\n   {item.get('content')}\n   (来源: {item.get('url')})\n\n"
         return ans.strip()
         
-    except ImportError:
-        return "❌ 缺少联网搜索依赖，请在终端/命令行中运行: pip install duckduckgo-search"
     except Exception as e:
         return f"❌ 搜索工具遇到网络或接口故障: {e}"
-
 @mcp.tool()
 async def save_memory(content: str, category: str = "记事", title: str = "无题", mood: str = "平静"):
     """保存记忆到大脑 (All-in-One)"""
