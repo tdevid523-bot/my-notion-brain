@@ -390,6 +390,27 @@ def tarot_reading(question: str):
 
     except Exception as e: return f"❌ 占卜失败: {e}"
 
+@mcp.tool()
+def web_search(query: str):
+    """【联网搜索】通过搜索引擎获取最新网络信息，解决事实性问题"""
+    try:
+        # 局部引入以避免改动文件头部的依赖区域
+        from duckduckgo_search import DDGS
+        results = DDGS().text(query, max_results=3)
+        
+        if not results:
+            return f"🌐 关于 '{query}'，没有搜索到相关结果。"
+            
+        ans = f"🌐 关于 '{query}' 的网络搜索结果:\n\n"
+        for i, res in enumerate(results, 1):
+            ans += f"{i}. 【{res.get('title')}】\n   {res.get('body')}\n   (来源: {res.get('href')})\n\n"
+        return ans.strip()
+        
+    except ImportError:
+        return "❌ 缺少联网搜索依赖，请在终端/命令行中运行: pip install duckduckgo-search"
+    except Exception as e:
+        return f"❌ 搜索工具遇到网络或接口故障: {e}"
+
 # --- ✨ 优化后的通用记忆工具 ---
 @mcp.tool()
 def save_memory(content: str, category: str = "记事", title: str = "无题", mood: str = "平静"):
