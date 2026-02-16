@@ -170,6 +170,9 @@ def _get_embedding(text: str):
         if not api_key:
             print("❌ 缺少 SILICON_API_KEY，无法生成向量")
             return []
+            
+        # 引入专门的向量模型环境变量，兜底默认使用 bge-m3
+        embed_model = os.environ.get("SILICON_EMBEDDING_MODEL", "BAAI/bge-m3")
         
         url = "https://api.siliconflow.cn/v1/embeddings"
         headers = {
@@ -177,7 +180,7 @@ def _get_embedding(text: str):
             "Content-Type": "application/json"
         }
         payload = {
-            "model": "BAAI/bge-m3", # 硅基流动的顶级多语言向量模型
+            "model": embed_model,
             "input": text,
             "encoding_format": "float"
         }
