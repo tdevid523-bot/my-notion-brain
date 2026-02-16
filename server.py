@@ -202,8 +202,28 @@ def _get_embedding(text: str):
             return []
             
         data = response.json()
-        return data["data"][0]["embedding"]
+        print(f"✅ 成功收到豆包多模态包裹，正在智能拆箱...")
         
+        # 👑 智能拆箱机制：兼容多模态的特殊包装
+        try:
+            if "data" in data:
+                if isinstance(data["data"], list) and len(data["data"]) > 0:
+                    return data["data"][0].get("embedding", [])
+                elif isinstance(data["data"], dict):
+                    # 如果 data 是个字典而不是列表，直接拿里面的 embedding
+                    return data["data"].get("embedding", [])
+            elif "embedding" in data:
+                return data["embedding"]
+                
+            # 如果都找不到，把奇怪的包裹打印出来看看
+            print(f"📦 拆箱遇到未知的包装结构: {str(data)[:500]}")
+            return []
+            
+        except Exception as parse_e:
+            print(f"❌ 提取向量时手滑了: {parse_e}")
+            print(f"📦 强行查看包裹内容: {str(data)[:500]}")
+            return []
+            
     except Exception as e:
         print(f"❌ 多模态网络请求失败: {e}")
         return []
