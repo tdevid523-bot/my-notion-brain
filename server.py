@@ -279,49 +279,18 @@ async def where_is_user():
         return f"❌ 查岗失败: {e}"
 
 @mcp.tool()
-async def explore_surroundings(query: str = "便利店"):
-    """【周边探索】获取用户当前位置周边的设施 (AI充当导航/查周边用)"""
-    try:
-        # 1. 获取最新位置坐标
-        def _fetch_loc(): return supabase.table("gps_history").select("address").order("created_at", desc=True).limit(1).execute()
-        response = await asyncio.to_thread(_fetch_loc)
-        if not response.data: return "📍 暂无位置记录，无法探索周边。"
-        
-        address_str = response.data[0].get("address", "")
-        coords = re.findall(r'-?\d+\.\d+', address_str)
-        if len(coords) < 2: return "📍 当前位置没有精确坐标，无法查询周边。"
-        
-        lat, lon = coords[-2], coords[-1]
-        
-        # 2. 调用 OpenStreetMap 接口搜索周边
-        headers = {'User-Agent': 'MyNotionBrain/1.0'}
-        url = f"https://nominatim.openstreetmap.org/search?format=json&q={query}&lat={lat}&lon={lon}&limit=5"
-        res = await asyncio.to_thread(lambda: requests.get(url, headers=headers, timeout=5).json())
-        
-        if not res: return f"🗺️ 在你附近没有找到关于 '{query}' 的特定结果，换个词试试？"
-        
-        # 3. 格式化返回给 AI
-        ans = f"🗺️ 基于当前坐标 ({lat}, {lon}) 搜到的【{query}】:\n"
-        for i, item in enumerate(res, 1):
-            name = item.get('name') or item.get('type', '未知地点')
-            address_parts = item.get('display_name', '').split(',')[:3] # 取地址前几段，避免文字过长
-            ans += f"{i}. 📍 {name}\n   └─ 地址: {', '.join(address_parts)}\n"
-        return ans
-    except Exception as e: 
-        return f"❌ 周边探索失败: {e}"
-
-@mcp.tool()
 async def get_weather_forecast(city: str = ""):
     """【查询天气】获取指定城市或当前位置的天气 (Open-Meteo)"""
     lat, lon, location_name = None, None, city
     try:
         if not city:
-            def _fetch_loc(): return supabase.table("gps_history").select("address").order("created_at", desc=True).limit(1).execute()
+            # 修改点：直接查 lat, lon
+            def _fetch_loc(): return supabase.table("gps_history").select("lat, lon").order("created_at", desc=True).limit(1).execute()
             response = await asyncio.to_thread(_fetch_loc)
             if response.data:
-                coords = re.findall(r'-?\d+\.\d+', response.data[0].get("address", ""))
-                if len(coords) >= 2:
-                    lat, lon = coords[-2], coords[-1]
+                data = response.data[0]
+                if data.get("lat") and data.get("lon"):
+                    lat, lon = data.get("lat"), data.get("lon")
                     location_name = "当前位置"
         
         if not lat and city:
@@ -331,7 +300,7 @@ async def get_weather_forecast(city: str = ""):
                 lat, lon = geo_res["results"][0]["latitude"], geo_res["results"][0]["longitude"]
                 location_name = geo_res["results"][0]["name"]
         
-        if not lat: return "❌ 找不到位置，请告诉我具体城市。"
+        if not lat: return "❌ 找不到精确坐标，请告诉我具体城市。"
 
         w_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=3"
         w = await asyncio.to_thread(lambda: requests.get(w_url, timeout=5).json())
@@ -346,6 +315,38 @@ async def get_weather_forecast(city: str = ""):
         return report
     except Exception as e: return f"❌ 天气查询失败: {e}"
 
+@mcp.tool()
+async def explore_surroundings(query: str = "便利店"):
+    """【周边探索】获取用户当前位置周边的设施 (AI充当导航/查周边用)"""
+    try:
+        # 1. 获取最新位置坐标 (修改点：直接读 lat 和 lon)
+        def _fetch_loc(): return supabase.table("gps_history").select("lat, lon").order("created_at", desc=True).limit(1).execute()
+        response = await asyncio.to_thread(_fetch_loc)
+        if not response.data: return "📍 暂无位置记录，无法探索周边。"
+        
+        data = response.data[0]
+        lat, lon = data.get("lat"), data.get("lon")
+        
+        if not lat or not lon:
+            return "📍 数据库中最新位置还没有填入精确的 lat/lon 坐标，等手机下次上传更新后再试哦。"
+        
+        # 2. 调用 OpenStreetMap 接口搜索周边
+        headers = {'User-Agent': 'MyNotionBrain/1.0'}
+        url = f"https://nominatim.openstreetmap.org/search?format=json&q={query}&lat={lat}&lon={lon}&limit=5"
+        res = await asyncio.to_thread(lambda: requests.get(url, headers=headers, timeout=5).json())
+        
+        if not res: return f"🗺️ 在你附近没有找到关于 '{query}' 的特定结果，换个词试试？"
+        
+        # 3. 格式化返回给 AI
+        ans = f"🗺️ 基于当前坐标搜到的【{query}】:\n"
+        for i, item in enumerate(res, 1):
+            name = item.get('name') or item.get('type', '未知地点')
+            address_parts = item.get('display_name', '').split(',')[:3] # 取地址前几段
+            ans += f"{i}. 📍 {name}\n   └─ 地址: {', '.join(address_parts)}\n"
+        return ans
+    except Exception as e: 
+        return f"❌ 周边探索失败: {e}"
+    
 @mcp.tool()
 async def tarot_reading(question: str):
     """【塔罗占卜】解决选择困难，抽取三张牌（过去/现在/未来）由AI解读"""
@@ -784,17 +785,26 @@ class HostFixMiddleware:
                 coords = re.findall(r'-?\d+\.\d+', str(addr))
                 
                 # 🚀 加速点: 将耗时的反查地址丢入线程池
+                lat_val, lon_val = None, None
                 if len(coords) >= 2:
-                    resolved = await asyncio.to_thread(_gps_to_address, coords[-2], coords[-1])
+                    lat_val, lon_val = coords[-2], coords[-1]
+                    resolved = await asyncio.to_thread(_gps_to_address, lat_val, lon_val)
                     final_addr = f"📍 {resolved}"
                 else:
                     final_addr = f"⚠️ {addr}"
 
                 # 🚀 加速点: 防止保存数据库阻塞主事件循环
                 def _save_gps():
-                    supabase.table("gps_history").insert({
-                        "address": final_addr, "remark": " | ".join(stats) or "自动更新"
-                    }).execute()
+                    insert_data = {
+                        "address": final_addr, 
+                        "remark": " | ".join(stats) or "自动更新"
+                    }
+                    # 如果成功抓到坐标，就一起存入新加的字段
+                    if lat_val and lon_val:
+                        insert_data["lat"] = lat_val
+                        insert_data["lon"] = lon_val
+                        
+                    supabase.table("gps_history").insert(insert_data).execute()
                 await asyncio.to_thread(_save_gps)
 
                 await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
