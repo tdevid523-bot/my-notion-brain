@@ -206,16 +206,19 @@ def _get_embedding(text: str):
         
         # 👑 智能拆箱机制：兼容多模态的特殊包装
         try:
+            raw_vec = []
             if "data" in data:
                 if isinstance(data["data"], list) and len(data["data"]) > 0:
-                    return data["data"][0].get("embedding", [])
+                    raw_vec = data["data"][0].get("embedding", [])
                 elif isinstance(data["data"], dict):
-                    # 如果 data 是个字典而不是列表，直接拿里面的 embedding
-                    return data["data"].get("embedding", [])
+                    raw_vec = data["data"].get("embedding", [])
             elif "embedding" in data:
-                return data["embedding"]
+                raw_vec = data["embedding"]
+            
+            if raw_vec:
+                # 👑 终极洗礼：把所有数字强制变成带小数点的 float，治好 Pinecone 的强迫症
+                return [float(x) for x in raw_vec]
                 
-            # 如果都找不到，把奇怪的包裹打印出来看看
             print(f"📦 拆箱遇到未知的包装结构: {str(data)[:500]}")
             return []
             
