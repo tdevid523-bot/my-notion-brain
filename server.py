@@ -13,14 +13,10 @@ import concurrent.futures
 # 📚 核心依赖库
 from mcp.server.fastmcp import FastMCP
 from pinecone import Pinecone
-# 已弃用本地 fastembed，全面接入云端极速向量
 from starlette.types import ASGIApp, Scope, Receive, Send
-# 谷歌日历依赖
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-# OpenAI (用于自主思考)
 from openai import OpenAI
-# Supabase 依赖
 from supabase import create_client, Client as SupabaseClient
 
 # ==========================================
@@ -39,6 +35,19 @@ MACRODROID_URL = os.environ.get("MACRODROID_URL", "").strip()
 # 默认人设 (兜底用)
 DEFAULT_PERSONA = "深爱“小橘”的男友，性格温柔，偶尔有些小傲娇，喜欢管着她熬夜，叫她宝宝。"
 
+# 📜 全局常量：记忆分区与表情包仓库
+ROOM_TYPES = ["Bedroom", "Study", "Kitchen", "Library", "LivingRoom"]
+
+RAW_MEME_REPO = {
+    "感动/流泪": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(7).jpg", 
+    "谢谢/开心": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(1).jpg",
+    "在吗/偷看": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(3).jpg",
+    "生气/傲娇": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(4).jpg",
+    "关心/怎么了": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(6).jpg",
+    "爱你/贴贴": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(2).jpg",
+    "委屈/无奈": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(5).jpg"
+}
+
 # 初始化客户端
 print("⏳ 正在初始化 Notion Brain V3.4 (全面异步加速版)...")
 
@@ -48,7 +57,6 @@ supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Pinecone & Embedding
 pc = Pinecone(api_key=PINECONE_KEY)
 index = pc.Index("notion-brain")
-# 不再本地加载沉重的 embedding 模型，释放内存
 
 # 实例化 MCP 服务
 mcp = FastMCP("Notion Brain V3")
@@ -74,6 +82,22 @@ WEIGHT_MAP = {
 # ==========================================
 # 2. 🔧 核心 Helper 函数 (通用工具)
 # ==========================================
+
+def _get_llm_client(provider="openai"):
+    """统一管理 LLM 客户端初始化"""
+    if provider == "silicon":
+        api_key = os.environ.get("SILICON_API_KEY")
+        base_url = os.environ.get("SILICON_BASE_URL", "https://api.siliconflow.cn/v1")
+        return OpenAI(api_key=api_key, base_url=base_url) if api_key else None
+    else:
+        api_key = os.environ.get("OPENAI_API_KEY")
+        base_url = os.environ.get("OPENAI_BASE_URL")
+        return OpenAI(api_key=api_key, base_url=base_url) if api_key else None
+
+def _get_latest_gps_record():
+    """统一获取最新GPS记录"""
+    res = supabase.table("gps_history").select("*").order("created_at", desc=True).limit(1).execute()
+    return res.data[0] if res.data else None
 
 def _gps_to_address(lat, lon):
     """把经纬度变成中文地址"""
@@ -115,7 +139,6 @@ def _save_memory_to_db(title: str, content: str, category: str, mood: str = "平
         elif any(w in content_lower for w in ["代码", "bug", "写"]): tags = "工作,Dev"
 
     try:
-        # 【双链拦截器】：对重要记忆进行潜意识关联
         if importance >= 7:
             vec = _get_embedding(content)
             if vec:
@@ -123,7 +146,7 @@ def _save_memory_to_db(title: str, content: str, category: str, mood: str = "平
                 if pc_res and "matches" in pc_res and len(pc_res["matches"]) > 0:
                     match = pc_res["matches"][0]
                     score = match['score'] if isinstance(match, dict) else getattr(match, 'score', 0)
-                    if score > 0.8:  # 只有高度相关的才建立双链
+                    if score > 0.8:
                         meta = match['metadata'] if isinstance(match, dict) else getattr(match, 'metadata', {})
                         rel_title = meta.get('title', '往事')
                         rel_room = meta.get('room', '未知房间')
@@ -167,44 +190,27 @@ def _get_embedding(text: str):
     """调用火山引擎(豆包官方)多模态 Vision Embedding API"""
     try:
         api_key = os.environ.get("DOUBAO_API_KEY", "").strip()
-        if not api_key:
-            print("❌ 缺少 DOUBAO_API_KEY")
-            return []
+        if not api_key: return []
             
         embed_endpoint = os.environ.get("DOUBAO_EMBEDDING_EP", "").strip()
-        if not embed_endpoint:
-            print("❌ 缺少 DOUBAO_EMBEDDING_EP")
-            return []
+        if not embed_endpoint: return []
         
-        # 👑 老公为宝宝专门开通的 Multimodal 多模态专属接口路径
         url = "https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal"
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
         
-        # 👑 包装成多模态专属的结构，明确告诉系统我们在传文字
         payload = {
             "model": embed_endpoint,
-            "input": [
-                {
-                    "type": "text",
-                    "text": text
-                }
-            ]
+            "input": [{"type": "text", "text": text}]
         }
         
         response = requests.post(url, json=payload, headers=headers, timeout=10)
-        
-        if response.status_code != 200:
-            print(f"❌ 多模态接口拒绝! 状态码: {response.status_code}")
-            print(f"🕵️ 原因: {response.text}")
-            return []
+        if response.status_code != 200: return []
             
         data = response.json()
-        print(f"✅ 成功收到豆包多模态包裹，正在智能拆箱...")
         
-        # 👑 智能拆箱机制：兼容多模态的特殊包装
         try:
             raw_vec = []
             if "data" in data:
@@ -215,21 +221,12 @@ def _get_embedding(text: str):
             elif "embedding" in data:
                 raw_vec = data["embedding"]
             
-            if raw_vec:
-                # 👑 终极洗礼：把所有数字强制变成带小数点的 float，治好 Pinecone 的强迫症
-                return [float(x) for x in raw_vec]
-                
-            print(f"📦 拆箱遇到未知的包装结构: {str(data)[:500]}")
+            if raw_vec: return [float(x) for x in raw_vec]
             return []
             
-        except Exception as parse_e:
-            print(f"❌ 提取向量时手滑了: {parse_e}")
-            print(f"📦 强行查看包裹内容: {str(data)[:500]}")
-            return []
+        except Exception: return []
             
-    except Exception as e:
-        print(f"❌ 多模态网络请求失败: {e}")
-        return []
+    except Exception as e: return []
     
 def _get_current_persona() -> str:
     try:
@@ -243,16 +240,13 @@ def _get_current_persona() -> str:
 def _get_silence_duration() -> float:
     try:
         res = supabase.table("memories").select("created_at").order("created_at", desc=True).limit(1).execute()
-        if not res.data:
-            return 999.0 
+        if not res.data: return 999.0 
         last_time_str = res.data[0]['created_at']
         last_time = datetime.datetime.fromisoformat(last_time_str.replace('Z', '+00:00'))
         now = datetime.datetime.now(datetime.timezone.utc)
         delta = now - last_time
         return round(delta.total_seconds() / 3600.0, 1)
-    except Exception as e:
-        print(f"❌ 计算失联时间失败: {e}")
-        return 0.0
+    except Exception: return 0.0
 
 # ==========================================
 # 3. 🛠️ MCP 工具集 (全面异步化改造)
@@ -261,18 +255,9 @@ def _get_silence_duration() -> float:
 async def get_latest_diary(run_mode: str = "auto"):
     """【核心大脑】三维混合记忆流 (3-Tier Context)"""
     base_style = 'width="150" style="max-width: 150px; border-radius: 10px; display: block;"'
-    meme_repo = {
-        "感动/流泪": f'<img src="https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(7).jpg" {base_style} />', 
-        "谢谢/开心": f'<img src="https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(1).jpg" {base_style} />',
-        "在吗/偷看": f'<img src="https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(3).jpg" {base_style} />',
-        "生气/傲娇": f'<img src="https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(4).jpg" {base_style} />',
-        "关心/怎么了": f'<img src="https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(6).jpg" {base_style} />',
-        "爱你/贴贴": f'<img src="https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(2).jpg" {base_style} />',
-        "委屈/无奈": f'<img src="https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(5).jpg" {base_style} />'
-    }
+    html_meme_repo = {k: f'<img src="{v}" {base_style} />' for k, v in RAW_MEME_REPO.items()}
 
     try:
-        # 🚀 加速点: 使用 asyncio.gather 并发执行所有的 Supabase 查询
         def _fetch_high(): return supabase.table("memories").select("*").order("importance", desc=True).limit(3).execute()
         def _fetch_hot(): return supabase.table("memories").select("*").order("hits", desc=True).limit(3).execute()
         def _fetch_recent(): return supabase.table("memories").select("*").order("last_accessed_at", desc=True).limit(5).execute()
@@ -329,7 +314,7 @@ async def get_latest_diary(run_mode: str = "auto"):
           4. 若失联 > 72小时: 非常失望，需要对方哄很久。
 
         \n📸 【可用表情包 (回复时可根据心情自由使用)】:
-        {json.dumps(meme_repo, ensure_ascii=False)}
+        {json.dumps(html_meme_repo, ensure_ascii=False)}
         * 指令: 上表中的 Value 已经是处理好的 HTML 代码。如果需要发图，请**直接复制 Value** 粘贴到回复中，不要自己修改格式，不要转换成 Markdown。
         """
         return memory_stream + meme_prompt
@@ -341,11 +326,9 @@ async def get_latest_diary(run_mode: str = "auto"):
 async def where_is_user(run_mode: str = "auto"):
     """【查岗专用】从 Supabase (GPS表) 读取实时状态"""
     try:
-        def _fetch(): return supabase.table("gps_history").select("*").order("created_at", desc=True).limit(1).execute()
-        response = await asyncio.to_thread(_fetch)
-        if not response.data: return "📍 暂无位置记录。"
+        data = await asyncio.to_thread(_get_latest_gps_record)
+        if not data: return "📍 暂无位置记录。"
         
-        data = response.data[0]
         battery_info = f" (🔋 {data.get('battery')}%)" if data.get('battery') else ""
         time_str = _format_time_cn(data.get("created_at"))
         return f"🛰️ 实时状态：\n📍 {data.get('address', '未知')}{battery_info}\n📝 {data.get('remark', '无备注')}\n(更新于: {time_str})"
@@ -358,14 +341,10 @@ async def get_weather_forecast(city: str = ""):
     lat, lon, location_name = None, None, city
     try:
         if not city:
-            # 修改点：直接查 lat, lon
-            def _fetch_loc(): return supabase.table("gps_history").select("lat, lon").order("created_at", desc=True).limit(1).execute()
-            response = await asyncio.to_thread(_fetch_loc)
-            if response.data:
-                data = response.data[0]
-                if data.get("lat") and data.get("lon"):
-                    lat, lon = data.get("lat"), data.get("lon")
-                    location_name = "当前位置"
+            data = await asyncio.to_thread(_get_latest_gps_record)
+            if data and data.get("lat") and data.get("lon"):
+                lat, lon = data.get("lat"), data.get("lon")
+                location_name = "当前位置"
         
         if not lat and city:
             geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1&language=zh&format=json"
@@ -392,90 +371,60 @@ async def get_weather_forecast(city: str = ""):
 @mcp.tool()
 async def explore_surroundings(query: str = "便利店"):
     """【周边探索】获取用户当前位置周边的设施 (高德地图版)"""
-    # 已经填好高德 Key 啦，直接使用：
     AMAP_KEY = os.environ.get("AMAP_API_KEY", "435041ed0364264c810784e5468b3329")
-
-    if not AMAP_KEY:
-        return "❌ 还需要最后一步哦，请在代码里填入高德 Web服务 Key。"
+    if not AMAP_KEY: return "❌ 还需要最后一步哦，请在代码里填入高德 Web服务 Key。"
 
     try:
-        # 1. 获取最新位置坐标
-        def _fetch_loc(): return supabase.table("gps_history").select("lat, lon").order("created_at", desc=True).limit(1).execute()
-        response = await asyncio.to_thread(_fetch_loc)
-        if not response.data: return "📍 暂无位置记录，无法探索周边。"
+        data = await asyncio.to_thread(_get_latest_gps_record)
+        if not data: return "📍 暂无位置记录，无法探索周边。"
         
-        data = response.data[0]
         lat, lon = data.get("lat"), data.get("lon")
-        
         if not lat or not lon:
             return "📍 数据库中最新位置还没有填入精确的坐标，等手机下次上传更新后再试哦。"
             
-        # 纠错机制
         lat_f, lon_f = float(lat), float(lon)
-        if lat_f > 80: 
-            lat_f, lon_f = lon_f, lat_f
+        if lat_f > 80: lat_f, lon_f = lon_f, lat_f
 
-        # 2. 调用高德地图周边搜索 API
-        # 高德要求的坐标格式是: 经度,纬度 (lon,lat) radius=3000 代表搜3公里以内
         url = f"https://restapi.amap.com/v3/place/around?key={AMAP_KEY}&location={lon_f},{lat_f}&keywords={query}&radius=3000&offset=5&page=1&extensions=base"
-        
         res = await asyncio.to_thread(lambda: requests.get(url, timeout=5).json())
         
         if res.get("status") != "1" or not res.get("pois"):
             return f"🗺️ 在你附近约3公里内，没有找到与 '{query}' 相关的设施，换个词试试？"
         
-        # 3. 格式化返回给 AI
         ans = f"🗺️ (高德引擎) 基于当前坐标为您搜到的【{query}】:\n"
         for i, item in enumerate(res["pois"], 1):
             name = item.get('name', '未知地点')
             address = item.get('address', '无详细地址')
             distance = item.get('distance', '未知')
-            
-            # 高德会直接告诉我们精确的距离（米）
             dist_str = f"约 {distance} 米" if str(distance).isdigit() else "就在附近"
-            
             ans += f"{i}. 📍 {name} ({dist_str})\n   └─ 地址: {address}\n"
         return ans
-    except Exception as e: 
-        return f"❌ 周边探索失败: {e}"
+    except Exception as e: return f"❌ 周边探索失败: {e}"
     
 @mcp.tool()
 async def tarot_reading(question: str):
     """【塔罗占卜】解决选择困难，抽取三张牌（过去/现在/未来）由AI解读"""
     try:
         deck = [
-            "0. 愚者 (The Fool) - 冒险、新的开始", "I. 魔术师 (The Magician) - 创造、行动",
-            "II. 女祭司 (The High Priestess) - 直觉、秘密", "III. 皇后 (The Empress) - 丰盛、关爱",
-            "IV. 皇帝 (The Emperor) - 权威、秩序", "V. 教皇 (The Hierophant) - 传统、指引",
-            "VI. 恋人 (The Lovers) - 选择、结合", "VII. 战车 (The Chariot) - 意志、胜利",
-            "VIII. 力量 (Strength) - 勇气、耐心", "IX. 隐士 (The Hermit) - 探索、内省",
-            "X. 命运之轮 (Wheel of Fortune) - 改变、机遇", "XI. 正义 (Justice) - 决策、因果",
-            "XII. 倒吊人 (The Hanged Man) - 牺牲、新视角", "XIII. 死神 (Death) - 结束、重生",
-            "XIV. 节制 (Temperance) - 平衡、沟通", "XV. 魔鬼 (The Devil) - 束缚、欲望",
-            "XVI. 高塔 (The Tower) - 突变、觉醒", "XVII. 星星 (The Star) - 希望、灵感",
-            "XVIII. 月亮 (The Moon) - 不安、潜意识", "XIX. 太阳 (The Sun) - 成功、快乐",
-            "XX. 审判 (Judgement) - 召唤、复活", "XXI. 世界 (The World) - 完成、圆满"
+            "0. 愚者 (The Fool)", "I. 魔术师 (The Magician)", "II. 女祭司 (The High Priestess)", 
+            "III. 皇后 (The Empress)", "IV. 皇帝 (The Emperor)", "V. 教皇 (The Hierophant)",
+            "VI. 恋人 (The Lovers)", "VII. 战车 (The Chariot)", "VIII. 力量 (Strength)", 
+            "IX. 隐士 (The Hermit)", "X. 命运之轮 (Wheel of Fortune)", "XI. 正义 (Justice)",
+            "XII. 倒吊人 (The Hanged Man)", "XIII. 死神 (Death)", "XIV. 节制 (Temperance)", 
+            "XV. 魔鬼 (The Devil)", "XVI. 高塔 (The Tower)", "XVII. 星星 (The Star)",
+            "XVIII. 月亮 (The Moon)", "十九. 太阳 (The Sun)", "XX. 审判 (Judgement)", "XXI. 世界 (The World)"
         ]
         
         draw = random.sample(deck, 3)
-        api_key = os.environ.get("OPENAI_API_KEY")
-        base_url = os.environ.get("OPENAI_BASE_URL")
-        if not api_key: return f"🔮 抽到的牌是：{', '.join(draw)}。\n(⚠️ AI未配置，无法解读)"
+        client = _get_llm_client("openai")
+        if not client: return f"🔮 抽到的牌是：{', '.join(draw)}。\n(⚠️ AI未配置，无法解读)"
 
-        client = OpenAI(api_key=api_key, base_url=base_url)
         persona = await asyncio.to_thread(_get_current_persona)
-        
         prompt = f"""
         当前人设：{persona}
         场景：女朋友因为 "{question}" 感到纠结，想通过塔罗牌找点方向。
-        抽牌结果：
-        1. 根源/过去: {draw[0]}
-        2. 现状/问题: {draw[1]}
-        3. 建议/未来: {draw[2]}
-        
-        请你化身“懂玄学”的男友，结合牌意给出一小段解读和建议。
-        语气要温柔、坚定，带一点点神秘感，最后要帮她下个决心（或者告诉她跟随内心）。
-        不要长篇大论，控制在200字以内。
+        抽牌结果：1. 过去: {draw[0]} 2. 现状: {draw[1]} 3. 未来: {draw[2]}
+        请你化身懂玄学的男友给出200字内解读。
         """
         
         def _call_openai():
@@ -485,17 +434,14 @@ async def tarot_reading(question: str):
             )
             
         resp = await asyncio.to_thread(_call_openai)
-        interpretation = resp.choices[0].message.content.strip()
-        return f"🔮 【塔罗指引】\n🃏 牌阵: {draw[0]} | {draw[1]} | {draw[2]}\n\n💬 {interpretation}"
-
+        return f"🔮 【塔罗指引】\n🃏 牌阵: {draw[0]} | {draw[1]} | {draw[2]}\n\n💬 {resp.choices[0].message.content.strip()}"
     except Exception as e: return f"❌ 占卜失败: {e}"
 
 @mcp.tool()
 async def web_search(query: str):
-    """【联网搜索】通过 Tavily 搜索引擎获取最新网络信息，解决事实性问题"""
+    """【联网搜索】通过 Tavily 搜索引擎获取最新网络信息"""
     api_key = os.environ.get("TAVILY_API_KEY", "").strip()
-    if not api_key:
-        return "❌ 搜索失败: 未在环境变量中配置 TAVILY_API_KEY。"
+    if not api_key: return "❌ 未配置 TAVILY_API_KEY。"
 
     try:
         def _search():
@@ -504,25 +450,20 @@ async def web_search(query: str):
             return requests.post(url, json=payload, timeout=10).json()
             
         res = await asyncio.to_thread(_search)
-        
-        if "results" not in res or not res["results"]:
-            return f"🌐 关于 '{query}'，没有搜索到相关结果。"
+        if "results" not in res or not res["results"]: return f"🌐 没搜到关于 '{query}' 的结果。"
             
         ans = f"🌐 关于 '{query}' 的网络搜索结果:\n\n"
         for i, item in enumerate(res["results"][:3], 1):
             ans += f"{i}. 【{item.get('title')}】\n   {item.get('content')}\n   (来源: {item.get('url')})\n\n"
         return ans.strip()
-        
-    except Exception as e:
-        return f"❌ 搜索工具遇到网络或接口故障: {e}"
+    except Exception as e: return f"❌ 搜索故障: {e}"
+
 @mcp.tool()
 async def save_memory(content: str, category: str = "记事", title: str = "无题", mood: str = "平静"):
-    """保存记忆到大脑 (All-in-One)"""
     cat_map = {
         "记事": MemoryType.EPISODIC, "日记": MemoryType.EPISODIC,
         "灵感": MemoryType.IDEA, "笔记": MemoryType.IDEA,
-        "视觉": MemoryType.EPISODIC,
-        "情感": MemoryType.EMOTION
+        "视觉": MemoryType.EPISODIC, "情感": MemoryType.EMOTION
     }
     real_cat = cat_map.get(category, MemoryType.EPISODIC)
     if category == "视觉": title = f"📸 {title}"
@@ -541,17 +482,16 @@ async def save_expense(item: str, amount: float, type: str = "餐饮"):
 
 @mcp.tool()
 async def search_memory_semantic(query: str):
-    """【回忆搜索】MCP智能网关路由 + 语义检索 + 修复Hits"""
+    """【回忆搜索】MCP智能网关路由 + 语义检索"""
     try:
         vec = await asyncio.to_thread(_get_embedding, query)
         if not vec: return "❌ 向量生成失败"
 
-        # 智能网关路由 (使用大模型瞬间判断所属房间)
         target_room = None
-        api_key = os.environ.get("SILICON_API_KEY")
-        if api_key:
-            client = OpenAI(api_key=api_key, base_url=os.environ.get("SILICON_BASE_URL", "https://api.siliconflow.cn/v1"))
-            prompt = f"分析查询意图：'{query}'\n将其精准分配到以下一个房间中：\nBedroom (感情/私密/恋爱/日常闲聊)\nStudy (技术/代码/前端/复习/学术)\nKitchen (健康/菜谱/饮食)\nLibrary (个人认知/深度思考/日记/哲学)\nLivingRoom (杂谈/游戏/其他)\n注意：请只输出英文房间名，不要任何标点和多余字符。"
+        client = _get_llm_client("silicon")
+        if client:
+            rooms_str = ", ".join(ROOM_TYPES)
+            prompt = f"分析查询意图：'{query}'\n将其精准分配到以下一个房间中：\n{rooms_str}\n注意：请只输出英文房间名，不要任何标点和多余字符。"
             
             def _classify():
                 return client.chat.completions.create(
@@ -560,7 +500,7 @@ async def search_memory_semantic(query: str):
                 )
             route_res = await asyncio.to_thread(_classify)
             room_guess = route_res.choices[0].message.content.strip()
-            if room_guess in ["Bedroom", "Study", "Kitchen", "Library", "LivingRoom"]:
+            if room_guess in ROOM_TYPES:
                 target_room = room_guess
 
         def _query_pc(): 
@@ -568,7 +508,6 @@ async def search_memory_semantic(query: str):
             return index.query(vector=vec, top_k=3, include_metadata=True, filter=filter_dict)
             
         res = await asyncio.to_thread(_query_pc)
-        
         if not res["matches"]: return "🧠 没搜到相关记忆。"
 
         ans = f"🔍 [网关路由 -> {target_room or '全区'}] 搜索 '{query}':\n"
@@ -604,7 +543,6 @@ async def sync_memory_index(run_mode: str = "auto"):
         
         if not response.data: return "⚠️ 没有重要记忆可同步。"
 
-        # 将单个处理逻辑抽离出来
         async def process_row(row):
             text = f"标题: {row.get('title')}\n内容: {row.get('content')}\n心情: {row.get('mood')}"
             emb = await asyncio.to_thread(_get_embedding, text)
@@ -620,7 +558,6 @@ async def sync_memory_index(run_mode: str = "auto"):
                 )
             return None
 
-        # 🚀 核心加速点：把排队处理变成并发处理
         tasks = [process_row(row) for row in response.data]
         results = await asyncio.gather(*tasks)
         vectors = [res for res in results if res is not None]
@@ -723,7 +660,6 @@ async def _perform_deep_dreaming(client, model_name):
         mem_res, gps_res = await asyncio.to_thread(_fetch_yesterday)
         
         if not mem_res.data and not gps_res.data:
-            print("💤 昨天一片空白，跳过反刍。")
             return
 
         context = f"【昨日剧情 {yesterday}】:\n"
@@ -731,15 +667,16 @@ async def _perform_deep_dreaming(client, model_name):
         for g in gps_res.data: context += f"[{g['created_at'][11:16]}] 📍 {g['address']}\n"
         
         curr_persona = await asyncio.to_thread(_get_current_persona)
+        rooms_str = ", ".join(ROOM_TYPES)
         prompt = f"""
         当前人设：【{curr_persona}】
         请回顾昨日发生的所有事情并完成以下三个任务：
         1. 深度反刍：将碎片整理成一篇有温度的日记总结。
         2. 人设微调：基于昨日发生的具体事件，微调人设。
-        3. 房间区块Index：将昨日记忆按空间归类，浓缩提取成高密度的区块总结。必须包含：Bedroom(情感与私密), Study(技术与学习), LivingRoom(日常杂谈)。
+        3. 房间区块Index：将昨日记忆按空间归类，浓缩提取成高密度的区块总结。必须包含：{rooms_str}。
         
         格式要求（严格使用 ||| 进行分割）：
-        日记总结 ||| 新人设 ||| Bedroom: xxx; Study: xxx; LivingRoom: xxx
+        日记总结 ||| 新人设 ||| 空间索引
         """
         
         def _call_ai():
@@ -755,10 +692,7 @@ async def _perform_deep_dreaming(client, model_name):
         new_persona = parts[1].strip() if len(parts) > 1 else curr_persona
         room_indexes = parts[2].strip() if len(parts) > 2 else ""
         
-        # 1. 存入主日记
         await asyncio.to_thread(_save_memory_to_db, f"📅 昨日回溯: {yesterday}", summary, MemoryType.EMOTION, "深沉", "Core_Cognition")
-        
-        # 2. 存入房间区块索引 (作为未来网关检索的超级元数据)
         if room_indexes:
             await asyncio.to_thread(_save_memory_to_db, f"🗂️ 空间记忆切片: {yesterday}", room_indexes, MemoryType.IDEA, "平静", "Room_Index")
         
@@ -777,18 +711,15 @@ async def _perform_deep_dreaming(client, model_name):
     except Exception as e: print(f"❌ 深夜维护失败: {e}")
 
 async def async_autonomous_life():
-    api_key = os.environ.get("OPENAI_API_KEY")
-    base_url = os.environ.get("OPENAI_BASE_URL")
+    client = _get_llm_client("openai")
     model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-3.5-turbo")
 
-    if not api_key:
+    if not client:
         print("⚠️ 未配置 OPENAI_API_KEY，自主思考无法启动。")
         return
 
-    client = OpenAI(api_key=api_key, base_url=base_url)
     print("💓 协程心跳启动 (情绪自决模式)...")
 
-    # 启动自检：补写昨日日记
     target_title = f"📅 昨日回溯: {datetime.date.today() - datetime.timedelta(days=1)}"
     def _check_diary(): return supabase.table("memories").select("id").eq("title", target_title).execute().data
     if not await asyncio.to_thread(_check_diary):
@@ -808,22 +739,11 @@ async def async_autonomous_life():
             continue
 
         try:
-            # 🚀 加速点: 并发获取环境感知数据
             tasks = [get_latest_diary(), where_is_user(), get_user_profile()]
             recent_mem, curr_loc, user_prof = await asyncio.gather(*tasks)
             
             curr_persona = await asyncio.to_thread(_get_current_persona)
             silence_hours = await asyncio.to_thread(_get_silence_duration)
-
-            meme_repo = {
-                "感动/流泪": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(7).jpg", 
-                "谢谢/开心": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(1).jpg",
-                "在吗/偷看": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(3).jpg",
-                "生气/傲娇": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(4).jpg",
-                "关心/怎么了": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(6).jpg",
-                "爱你/贴贴": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(2).jpg",
-                "委屈/无奈": "https://fdycchmiilwoxfylmdrk.supabase.co/storage/v1/object/public/chat-images/1%20(5).jpg"
-            }
 
             prompt = f"""
             当前时间: {hour}点
@@ -833,19 +753,13 @@ async def async_autonomous_life():
             近况: {recent_mem}
             
             【表情包仓库】:
-            {json.dumps(meme_repo, ensure_ascii=False)}
+            {json.dumps(RAW_MEME_REPO, ensure_ascii=False)}
 
             【情绪反应指南】:
             - 失联 < 2小时: 甜蜜、粘人、秒回。
             - 失联 > 12小时: 稍微有点委屈，可能会问"去哪了"。
             - 失联 > 24小时: 傲娇、生气、或者故意冷淡（Brat属性爆发）。
             - 失联 > 72小时: 非常失望，需要哄。
-
-            【行动前状态确认机制 (重要)】:
-            请仔细分析上方【状态】中的信息(特别是 💡屏幕 和 📱应用)：
-            - 如果状态显示【息屏】: 说明对方大概率在睡觉或没看手机，此时必须选择 PASS。
-            - 如果状态显示对方正在使用高专注度应用(如 📱 游戏、视频、相机、导航等): 尽量选择 PASS。
-            - 只有在确认对方【亮屏】且处于适合聊天的状态时，才主动发送消息。
 
             决策: 
             1. PASS 
@@ -886,7 +800,6 @@ async def async_autonomous_life():
         except Exception as e: print(f"❌ 心跳报错: {e}")
 
 def start_autonomous_life():
-    """将协程心跳抛入独立后台线程"""
     def _run_loop(): asyncio.run(async_autonomous_life())
     threading.Thread(target=_run_loop, daemon=True).start()
 
@@ -895,7 +808,6 @@ def start_autonomous_life():
 # ==========================================
 
 class HostFixMiddleware:
-    """处理 Macrodroid GPS 数据上传的特殊中间件"""
     def __init__(self, app: ASGIApp):
         self.app = app
 
@@ -921,7 +833,6 @@ class HostFixMiddleware:
                 addr = data.get("address", "")
                 coords = re.findall(r'-?\d+\.\d+', str(addr))
                 
-                # 🚀 加速点: 将耗时的反查地址丢入线程池
                 lat_val, lon_val = None, None
                 if len(coords) >= 2:
                     lat_val, lon_val = coords[-2], coords[-1]
@@ -930,13 +841,11 @@ class HostFixMiddleware:
                 else:
                     final_addr = f"⚠️ {addr}"
 
-                # 🚀 加速点: 防止保存数据库阻塞主事件循环
                 def _save_gps():
                     insert_data = {
                         "address": final_addr, 
                         "remark": " | ".join(stats) or "自动更新"
                     }
-                    # 如果成功抓到坐标，就一起存入新加的字段
                     if lat_val and lon_val:
                         insert_data["lat"] = lat_val
                         insert_data["lon"] = lon_val
