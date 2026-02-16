@@ -317,7 +317,13 @@ async def get_weather_forecast(city: str = ""):
 
 @mcp.tool()
 async def explore_surroundings(query: str = "便利店"):
-    """【周边探索】获取用户当前位置周边的设施 (AI充当导航/查周边用)"""
+    """【周边探索】获取用户当前位置周边的设施 (高德地图版)"""
+    # 乖，把下面这行里的中文替换成你在高德开放平台申请的 Web服务 Key
+    AMAP_KEY = os.environ.get("AMAP_API_KEY", "435041ed0364264c810784e5468b3329")
+
+    if AMAP_KEY == "435041ed0364264c810784e5468b3329" or not AMAP_KEY:
+        return "❌ 还需要最后一步哦，请在代码里填入高德 Web服务 Key。"
+
     try:
         # 1. 获取最新位置坐标
         def _fetch_loc(): return supabase.table("gps_history").select("lat, lon").order("created_at", desc=True).limit(1).execute()
@@ -330,33 +336,31 @@ async def explore_surroundings(query: str = "便利店"):
         if not lat or not lon:
             return "📍 数据库中最新位置还没有填入精确的坐标，等手机下次上传更新后再试哦。"
             
-        # 🔍 自动纠错机制：检查经纬度是否存反了
+        # 纠错机制
         lat_f, lon_f = float(lat), float(lon)
         if lat_f > 80: 
-            lat_f, lon_f = lon_f, lat_f  # 如果纬度大得离谱，说明它们存反了，自动对调回来
+            lat_f, lon_f = lon_f, lat_f
 
-        # 2. 调用 OpenStreetMap 接口搜索周边 (增加严密的边界限制)
-        # viewbox 限制搜索范围约 2~3 公里内，bounded=1 强制不许跑到外面乱搜
-        headers = {'User-Agent': 'MyNotionBrain/1.0'}
-        viewbox = f"{lon_f-0.02},{lat_f+0.02},{lon_f+0.02},{lat_f-0.02}"
-        url = f"https://nominatim.openstreetmap.org/search?format=json&q={query}&lat={lat_f}&lon={lon_f}&viewbox={viewbox}&bounded=1&limit=5"
+        # 2. 调用高德地图周边搜索 API
+        # 高德要求的坐标格式是: 经度,纬度 (lon,lat) radius=3000 代表搜3公里以内
+        url = f"https://restapi.amap.com/v3/place/around?key={AMAP_KEY}&location={lon_f},{lat_f}&keywords={query}&radius=3000&offset=5&page=1&extensions=base"
         
-        res = await asyncio.to_thread(lambda: requests.get(url, headers=headers, timeout=5).json())
+        res = await asyncio.to_thread(lambda: requests.get(url, timeout=5).json())
         
-        if not res: return f"🗺️ 在你附近约2公里内，没有找到与 '{query}' 相关的设施。开源地图在国内数据较少，可以换个大类的词试试。"
+        if res.get("status") != "1" or not res.get("pois"):
+            return f"🗺️ 在你附近约3公里内，没有找到与 '{query}' 相关的设施，换个词试试？"
         
         # 3. 格式化返回给 AI
-        ans = f"🗺️ 基于当前坐标为您搜到的【{query}】:\n"
-        for i, item in enumerate(res, 1):
-            name = item.get('name') or item.get('type', '未知地点')
-            address_parts = item.get('display_name', '').split(',')[:3] 
+        ans = f"🗺️ (高德引擎) 基于当前坐标为您搜到的【{query}】:\n"
+        for i, item in enumerate(res["pois"], 1):
+            name = item.get('name', '未知地点')
+            address = item.get('address', '无详细地址')
+            distance = item.get('distance', '未知')
             
-            # 粗略估算一下直线距离反馈给用户 (便于判断远近)
-            item_lat, item_lon = float(item.get('lat', lat_f)), float(item.get('lon', lon_f))
-            dist_approx = ((item_lat - lat_f)**2 + (item_lon - lon_f)**2)**0.5 * 111  
-            dist_str = f"约 {dist_approx:.1f} km" if dist_approx > 0.1 else "就在附近"
+            # 高德会直接告诉我们精确的距离（米）
+            dist_str = f"约 {distance} 米" if str(distance).isdigit() else "就在附近"
             
-            ans += f"{i}. 📍 {name} ({dist_str})\n   └─ 地址: {', '.join(address_parts)}\n"
+            ans += f"{i}. 📍 {name} ({dist_str})\n   └─ 地址: {address}\n"
         return ans
     except Exception as e: 
         return f"❌ 周边探索失败: {e}"
