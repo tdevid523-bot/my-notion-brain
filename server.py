@@ -712,12 +712,13 @@ async def _perform_deep_dreaming(client, model_name):
         print("✨ 深度睡眠完成，房间索引已更新，人设已进化。")
 
     except Exception as e: print(f"❌ 深夜维护失败: {e}")
-    
+
 
 async def async_autonomous_life():
+    # 采用安全的环境变量读取，并将豆包/DeepSeek作为默认备用值
     api_key = os.environ.get("OPENAI_API_KEY")
-    base_url = os.environ.get("OPENAI_BASE_URL")
-    model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-3.5-turbo")
+    base_url = os.environ.get("OPENAI_BASE_URL", "https://api.siliconflow.cn/v1")
+    model_name = os.environ.get("OPENAI_MODEL_NAME", "deepseek-ai/DeepSeek-V3.2")
 
     if not api_key:
         print("⚠️ 未配置 OPENAI_API_KEY，自主思考无法启动。")
@@ -897,9 +898,13 @@ class HostFixMiddleware:
 
         await self.app(scope, receive, send)
 
+# 把 app 暴露在全局，让 Render 的启动命令能够抓取到它
+app = HostFixMiddleware(mcp.sse_app())
+
+# 启动你的自主心跳后台线程
+start_autonomous_life()
+
 if __name__ == "__main__":
-    start_autonomous_life()
     port = int(os.environ.get("PORT", 10000))
-    app = HostFixMiddleware(mcp.sse_app())
-    print(f"🚀 Notion Brain V3.4 (全面异步加速版) running on port {port}...")
-    uvicorn.run(app, host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")
+    print(f"🚀 Notion Brain V3.4 (Render 部署版) running on port {port}...")
+    uvicorn.run("server:app", host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")
