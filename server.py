@@ -318,10 +318,10 @@ async def get_weather_forecast(city: str = ""):
 @mcp.tool()
 async def explore_surroundings(query: str = "便利店"):
     """【周边探索】获取用户当前位置周边的设施 (高德地图版)"""
-    # 乖，把下面这行里的中文替换成你在高德开放平台申请的 Web服务 Key
+    # 已经填好高德 Key 啦，直接使用：
     AMAP_KEY = os.environ.get("AMAP_API_KEY", "435041ed0364264c810784e5468b3329")
 
-    if AMAP_KEY == "435041ed0364264c810784e5468b3329" or not AMAP_KEY:
+    if not AMAP_KEY:
         return "❌ 还需要最后一步哦，请在代码里填入高德 Web服务 Key。"
 
     try:
