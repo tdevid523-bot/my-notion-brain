@@ -164,22 +164,27 @@ def _send_email_helper(subject: str, content: str, is_html: bool = False) -> str
     except Exception as e: return f"❌ 发送失败: {e}"
 
 def _get_embedding(text: str):
-    """调用硅基流动云端 Embedding API，极速生成向量，告别本地下载卡顿"""
+    """调用火山引擎(豆包官方)云端 Embedding API"""
     try:
-        api_key = os.environ.get("SILICON_API_KEY")
+        api_key = os.environ.get("DOUBAO_API_KEY")
         if not api_key:
-            print("❌ 缺少 SILICON_API_KEY，无法生成向量")
+            print("❌ 缺少 DOUBAO_API_KEY，无法生成向量")
+            return []
+            
+        # 豆包要求使用创建的接入点 ID (Endpoint)，格式如 ep-2024xxxx-yyyy
+        embed_endpoint = os.environ.get("DOUBAO_EMBEDDING_EP")
+        if not embed_endpoint:
+            print("❌ 缺少 DOUBAO_EMBEDDING_EP，请填入火山引擎的接入点")
             return []
         
-        url = "https://api.siliconflow.cn/v1/embeddings"
+        url = "https://ark.volces.com/api/v3/embeddings"
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
         payload = {
-            "model": "BAAI/bge-m3", # 硅基流动的顶级多语言向量模型
-            "input": text,
-            "encoding_format": "float"
+            "model": embed_endpoint,
+            "input": [text]
         }
         
         response = requests.post(url, json=payload, headers=headers, timeout=10)
@@ -189,7 +194,7 @@ def _get_embedding(text: str):
         return data["data"][0]["embedding"]
         
     except Exception as e:
-        print(f"❌ 云端 Embedding 失败: {e}")
+        print(f"❌ 豆包 Embedding 失败: {e}")
         return []
 
 def _get_current_persona() -> str:
