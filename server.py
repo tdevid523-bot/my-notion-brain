@@ -536,30 +536,33 @@ async def search_memory_semantic(query: str):
 
 @mcp.tool()
 async def sync_memory_index(run_mode: str = "auto"):
-    """【记忆整理】将重要记忆(>=4)同步到 Pinecone（已添加天然分区）"""
+    """【记忆整理】将重要记忆同步到 Pinecone（极速并发版 + 天然分区）"""
     try:
-        # 修改点: 在 select 中增加 category 字段，用于后续的房间划分
         def _fetch_important(): return supabase.table("memories").select("id, title, content, created_at, mood, category").gte("importance", 4).execute()
         response = await asyncio.to_thread(_fetch_important)
         
         if not response.data: return "⚠️ 没有重要记忆可同步。"
 
-        vectors = []
-        for row in response.data:
+        # 将单个处理逻辑抽离出来
+        async def process_row(row):
             text = f"标题: {row.get('title')}\n内容: {row.get('content')}\n心情: {row.get('mood')}"
             emb = await asyncio.to_thread(_get_embedding, text)
             if emb:
-                # 依据现有 Category 动态分配房间 (Metadata 标签化)
                 cat = row.get('category', '')
-                room = "LivingRoom" # 默认杂谈
+                room = "LivingRoom"
                 if cat in ["情感"]: room = "Bedroom"
                 elif cat in ["灵感", "笔记"]: room = "Study"
                 elif cat in ["记事", "日记"]: room = "Library"
-
-                vectors.append((
+                return (
                     str(row.get('id')), emb, 
                     {"text": row.get('content'), "title": row.get('title'), "date": str(row.get('created_at')), "mood": row.get('mood'), "room": room}
-                ))
+                )
+            return None
+
+        # 🚀 核心加速点：把排队处理变成并发处理
+        tasks = [process_row(row) for row in response.data]
+        results = await asyncio.gather(*tasks)
+        vectors = [res for res in results if res is not None]
         
         if vectors:
             batch_size = 100
@@ -567,7 +570,7 @@ async def sync_memory_index(run_mode: str = "auto"):
                 for i in range(0, len(vectors), batch_size):
                     index.upsert(vectors=vectors[i:i + batch_size])
             await asyncio.to_thread(_upsert)
-            return f"✅ 同步成功！共更新 {len(vectors)} 条记忆，已建立天然分区。"
+            return f"✅ 同步成功！共极速更新 {len(vectors)} 条记忆，已建立天然分区。"
         return "⚠️ 数据为空。"
     except Exception as e: return f"❌ 同步失败: {e}"
 
