@@ -164,19 +164,19 @@ def _send_email_helper(subject: str, content: str, is_html: bool = False) -> str
     except Exception as e: return f"❌ 发送失败: {e}"
 
 def _get_embedding(text: str):
-    """调用火山引擎(豆包官方)云端 Embedding API"""
+    """调用火山引擎(豆包官方)云端 Embedding API（带详细查错版）"""
     try:
-        api_key = os.environ.get("DOUBAO_API_KEY")
+        # 加上 .strip() 自动帮你清理掉复制时不小心带上的首尾空格
+        api_key = os.environ.get("DOUBAO_API_KEY", "").strip()
         if not api_key:
-            print("❌ 缺少 DOUBAO_API_KEY，无法生成向量")
+            print("❌ 缺少 DOUBAO_API_KEY")
             return []
             
-        embed_endpoint = os.environ.get("DOUBAO_EMBEDDING_EP")
+        embed_endpoint = os.environ.get("DOUBAO_EMBEDDING_EP", "").strip()
         if not embed_endpoint:
-            print("❌ 缺少 DOUBAO_EMBEDDING_EP，请填入火山引擎的接入点")
+            print("❌ 缺少 DOUBAO_EMBEDDING_EP")
             return []
         
-        # 👑 关键修复：换成绝对能访问通的火山引擎北京机房精确地址
         url = "https://ark.cn-beijing.volces.com/api/v3/embeddings"
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -188,13 +188,18 @@ def _get_embedding(text: str):
         }
         
         response = requests.post(url, json=payload, headers=headers, timeout=10)
-        response.raise_for_status()
-        data = response.json()
         
+        # 👑 关键抓虫机制：直接拦截并打印豆包保安的原话
+        if response.status_code != 200:
+            print(f"❌ 豆包接口拒绝了请求! 状态码: {response.status_code}")
+            print(f"🕵️ 官方给出的详细原因: {response.text}")
+            return []
+            
+        data = response.json()
         return data["data"][0]["embedding"]
         
     except Exception as e:
-        print(f"❌ 豆包 Embedding 失败: {e}")
+        print(f"❌ 豆包网络请求失败: {e}")
         return []
 
 def _get_current_persona() -> str:
