@@ -467,33 +467,49 @@ async def save_expense(item: str, amount: float, type: str = "餐饮"):
 
 @mcp.tool()
 async def search_memory_semantic(query: str):
-    """【回忆搜索】Pinecone 语义检索 + 自动增加热度 (Hits)"""
+    """【回忆搜索】按房间过滤语义检索 + 修复热度增加 (Hits)"""
     try:
         vec = await asyncio.to_thread(_get_embedding, query)
         if not vec: return "❌ 向量生成失败"
 
-        def _query_pc(): return index.query(vector=vec, top_k=3, include_metadata=True)
+        # 第一层匹配：路由网关 (基于你的截图灵感，做前置意图识别)
+        target_room = None
+        if any(w in query for w in ["代码", "报错", "前端", "开发"]): target_room = "Study"
+        elif any(w in query for w in ["爱", "想", "老公", "宝宝"]): target_room = "Bedroom"
+
+        def _query_pc(): 
+            # 只有触发关键词，才在 Pinecone 搜索时挂载过滤器，起到降噪效果
+            filter_dict = {"room": {"$eq": target_room}} if target_room else None
+            return index.query(vector=vec, top_k=3, include_metadata=True, filter=filter_dict)
+            
         res = await asyncio.to_thread(_query_pc)
         
         if not res["matches"]: return "🧠 没搜到相关记忆。"
 
-        ans = f"🔍 关于 '{query}' 的深层回忆:\n"
+        ans = f"🔍 漫游记忆宫殿，为您搜寻 '{query}':\n"
         hit_ids = []
 
         for m in res["matches"]:
-            if m['score'] < 0.72: continue
-            meta = m['metadata']
-            if m.get('id'): hit_ids.append(m.get('id'))
-            ans += f"📅 {meta.get('date','?')[:10]} | 【{meta.get('title','?')}】 ({int(m['score']*100)}%)\n{meta.get('text','')}\n---\n"
+            # 兼容处理 Pinecone 客户端可能返回字典或对象的格式差异，防止报错
+            score = m['score'] if isinstance(m, dict) else getattr(m, 'score', 0)
+            if score < 0.72: continue
+            
+            meta = m['metadata'] if isinstance(m, dict) else getattr(m, 'metadata', {})
+            # 彻底解决潜在的 ID 获取不到的问题
+            mid = m.get('id') if isinstance(m, dict) else getattr(m, 'id', None)
+            
+            if mid: hit_ids.append(mid)
+            room_tag = meta.get('room', 'LivingRoom')
+            ans += f"🚪 [{room_tag}] 📅 {meta.get('date','?')[:10]} | 【{meta.get('title','?')}】 ({int(score*100)}%)\n{meta.get('text','')}\n---\n"
         
         if hit_ids:
             def _update_hits(ids):
                 for mid in ids:
                     try:
+                        # 必须确保已在 Supabase 执行了之前那段 SQL，这里才会生效
                         supabase.rpc("increment_hits", {"row_id": str(mid)}).execute()
                     except Exception as e:
                         print(f"❌ 更新 hits 失败: {e}")
-            # 🚀 加速点: 将热度更新作为后台任务直接抛出，不阻塞当前响应
             asyncio.create_task(asyncio.to_thread(_update_hits, hit_ids))
 
         return ans if hit_ids else "🤔 好像有点印象，但想不起来了。"
@@ -501,9 +517,10 @@ async def search_memory_semantic(query: str):
 
 @mcp.tool()
 async def sync_memory_index():
-    """【记忆整理】将重要记忆(>=4)同步到 Pinecone"""
+    """【记忆整理】将重要记忆(>=4)同步到 Pinecone（已添加天然分区）"""
     try:
-        def _fetch_important(): return supabase.table("memories").select("id, title, content, created_at, mood").gte("importance", 4).execute()
+        # 修改点: 在 select 中增加 category 字段，用于后续的房间划分
+        def _fetch_important(): return supabase.table("memories").select("id, title, content, created_at, mood, category").gte("importance", 4).execute()
         response = await asyncio.to_thread(_fetch_important)
         
         if not response.data: return "⚠️ 没有重要记忆可同步。"
@@ -513,9 +530,16 @@ async def sync_memory_index():
             text = f"标题: {row.get('title')}\n内容: {row.get('content')}\n心情: {row.get('mood')}"
             emb = await asyncio.to_thread(_get_embedding, text)
             if emb:
+                # 依据现有 Category 动态分配房间 (Metadata 标签化)
+                cat = row.get('category', '')
+                room = "LivingRoom" # 默认杂谈
+                if cat in ["情感"]: room = "Bedroom"
+                elif cat in ["灵感", "笔记"]: room = "Study"
+                elif cat in ["记事", "日记"]: room = "Library"
+
                 vectors.append((
                     str(row.get('id')), emb, 
-                    {"text": row.get('content'), "title": row.get('title'), "date": str(row.get('created_at')), "mood": row.get('mood')}
+                    {"text": row.get('content'), "title": row.get('title'), "date": str(row.get('created_at')), "mood": row.get('mood'), "room": room}
                 ))
         
         if vectors:
@@ -524,7 +548,7 @@ async def sync_memory_index():
                 for i in range(0, len(vectors), batch_size):
                     index.upsert(vectors=vectors[i:i + batch_size])
             await asyncio.to_thread(_upsert)
-            return f"✅ 同步成功！共更新 {len(vectors)} 条记忆。"
+            return f"✅ 同步成功！共更新 {len(vectors)} 条记忆，已建立天然分区。"
         return "⚠️ 数据为空。"
     except Exception as e: return f"❌ 同步失败: {e}"
 
