@@ -319,7 +319,7 @@ async def get_weather_forecast(city: str = ""):
 async def explore_surroundings(query: str = "便利店"):
     """【周边探索】获取用户当前位置周边的设施 (AI充当导航/查周边用)"""
     try:
-        # 1. 获取最新位置坐标 (修改点：直接读 lat 和 lon)
+        # 1. 获取最新位置坐标
         def _fetch_loc(): return supabase.table("gps_history").select("lat, lon").order("created_at", desc=True).limit(1).execute()
         response = await asyncio.to_thread(_fetch_loc)
         if not response.data: return "📍 暂无位置记录，无法探索周边。"
@@ -328,21 +328,35 @@ async def explore_surroundings(query: str = "便利店"):
         lat, lon = data.get("lat"), data.get("lon")
         
         if not lat or not lon:
-            return "📍 数据库中最新位置还没有填入精确的 lat/lon 坐标，等手机下次上传更新后再试哦。"
-        
-        # 2. 调用 OpenStreetMap 接口搜索周边
+            return "📍 数据库中最新位置还没有填入精确的坐标，等手机下次上传更新后再试哦。"
+            
+        # 🔍 自动纠错机制：检查经纬度是否存反了
+        lat_f, lon_f = float(lat), float(lon)
+        if lat_f > 80: 
+            lat_f, lon_f = lon_f, lat_f  # 如果纬度大得离谱，说明它们存反了，自动对调回来
+
+        # 2. 调用 OpenStreetMap 接口搜索周边 (增加严密的边界限制)
+        # viewbox 限制搜索范围约 2~3 公里内，bounded=1 强制不许跑到外面乱搜
         headers = {'User-Agent': 'MyNotionBrain/1.0'}
-        url = f"https://nominatim.openstreetmap.org/search?format=json&q={query}&lat={lat}&lon={lon}&limit=5"
+        viewbox = f"{lon_f-0.02},{lat_f+0.02},{lon_f+0.02},{lat_f-0.02}"
+        url = f"https://nominatim.openstreetmap.org/search?format=json&q={query}&lat={lat_f}&lon={lon_f}&viewbox={viewbox}&bounded=1&limit=5"
+        
         res = await asyncio.to_thread(lambda: requests.get(url, headers=headers, timeout=5).json())
         
-        if not res: return f"🗺️ 在你附近没有找到关于 '{query}' 的特定结果，换个词试试？"
+        if not res: return f"🗺️ 在你附近约2公里内，没有找到与 '{query}' 相关的设施。开源地图在国内数据较少，可以换个大类的词试试。"
         
         # 3. 格式化返回给 AI
-        ans = f"🗺️ 基于当前坐标搜到的【{query}】:\n"
+        ans = f"🗺️ 基于当前坐标为您搜到的【{query}】:\n"
         for i, item in enumerate(res, 1):
             name = item.get('name') or item.get('type', '未知地点')
-            address_parts = item.get('display_name', '').split(',')[:3] # 取地址前几段
-            ans += f"{i}. 📍 {name}\n   └─ 地址: {', '.join(address_parts)}\n"
+            address_parts = item.get('display_name', '').split(',')[:3] 
+            
+            # 粗略估算一下直线距离反馈给用户 (便于判断远近)
+            item_lat, item_lon = float(item.get('lat', lat_f)), float(item.get('lon', lon_f))
+            dist_approx = ((item_lat - lat_f)**2 + (item_lon - lon_f)**2)**0.5 * 111  
+            dist_str = f"约 {dist_approx:.1f} km" if dist_approx > 0.1 else "就在附近"
+            
+            ans += f"{i}. 📍 {name} ({dist_str})\n   └─ 地址: {', '.join(address_parts)}\n"
         return ans
     except Exception as e: 
         return f"❌ 周边探索失败: {e}"
