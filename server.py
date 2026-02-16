@@ -196,9 +196,8 @@ def _get_silence_duration() -> float:
 # ==========================================
 # 3. 🛠️ MCP 工具集 (全面异步化改造)
 # ==========================================
-
 @mcp.tool()
-async def get_latest_diary():
+async def get_latest_diary(run_mode: str = "auto"):
     """【核心大脑】三维混合记忆流 (3-Tier Context)"""
     base_style = 'width="150" style="max-width: 150px; border-radius: 10px; display: block;"'
     meme_repo = {
@@ -278,7 +277,7 @@ async def get_latest_diary():
         return f"❌ 读取记忆流失败: {e}"
 
 @mcp.tool()
-async def where_is_user():
+async def where_is_user(run_mode: str = "auto"):
     """【查岗专用】从 Supabase (GPS表) 读取实时状态"""
     try:
         def _fetch(): return supabase.table("gps_history").select("*").order("created_at", desc=True).limit(1).execute()
@@ -536,7 +535,7 @@ async def search_memory_semantic(query: str):
     except Exception as e: return f"❌ 搜索失败: {e}"
 
 @mcp.tool()
-async def sync_memory_index(dummy: str = ""):
+async def sync_memory_index(run_mode: str = "auto"):
     """【记忆整理】将重要记忆(>=4)同步到 Pinecone（已添加天然分区）"""
     try:
         # 修改点: 在 select 中增加 category 字段，用于后续的房间划分
@@ -581,7 +580,7 @@ async def manage_user_fact(key: str, value: str):
     except Exception as e: return f"❌ 失败: {e}"
 
 @mcp.tool()
-async def get_user_profile():
+async def get_user_profile(run_mode: str = "auto"):
     try:
         def _fetch(): return supabase.table("user_facts").select("key, value").execute()
         response = await asyncio.to_thread(_fetch)
