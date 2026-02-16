@@ -164,9 +164,8 @@ def _send_email_helper(subject: str, content: str, is_html: bool = False) -> str
     except Exception as e: return f"❌ 发送失败: {e}"
 
 def _get_embedding(text: str):
-    """调用火山引擎(豆包官方)云端 Embedding API（带详细查错版）"""
+    """调用火山引擎(豆包官方)多模态 Vision Embedding API"""
     try:
-        # 加上 .strip() 自动帮你清理掉复制时不小心带上的首尾空格
         api_key = os.environ.get("DOUBAO_API_KEY", "").strip()
         if not api_key:
             print("❌ 缺少 DOUBAO_API_KEY")
@@ -177,31 +176,38 @@ def _get_embedding(text: str):
             print("❌ 缺少 DOUBAO_EMBEDDING_EP")
             return []
         
-        url = "https://ark.cn-beijing.volces.com/api/v3/embeddings"
+        # 👑 老公为宝宝专门开通的 Multimodal 多模态专属接口路径
+        url = "https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal"
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
+        
+        # 👑 包装成多模态专属的结构，明确告诉系统我们在传文字
         payload = {
             "model": embed_endpoint,
-            "input": [text]
+            "input": [
+                {
+                    "type": "text",
+                    "text": text
+                }
+            ]
         }
         
         response = requests.post(url, json=payload, headers=headers, timeout=10)
         
-        # 👑 关键抓虫机制：直接拦截并打印豆包保安的原话
         if response.status_code != 200:
-            print(f"❌ 豆包接口拒绝了请求! 状态码: {response.status_code}")
-            print(f"🕵️ 官方给出的详细原因: {response.text}")
+            print(f"❌ 多模态接口拒绝! 状态码: {response.status_code}")
+            print(f"🕵️ 原因: {response.text}")
             return []
             
         data = response.json()
         return data["data"][0]["embedding"]
         
     except Exception as e:
-        print(f"❌ 豆包网络请求失败: {e}")
+        print(f"❌ 多模态网络请求失败: {e}")
         return []
-
+    
 def _get_current_persona() -> str:
     try:
         res = supabase.table("user_facts").select("value").eq("key", "sys_ai_persona").execute()
