@@ -538,7 +538,14 @@ async def search_memory_semantic(query: str):
 async def sync_memory_index(run_mode: str = "auto"):
     """【记忆整理】将重要记忆同步到 Pinecone（极速并发版 + 天然分区）"""
     try:
-        def _fetch_important(): return supabase.table("memories").select("id, title, content, created_at, mood, category").gte("importance", 4).execute()
+        # 🛑 加上 .limit(20) 限制，防止一次性处理太多导致超时报错
+        def _fetch_important(): 
+            return supabase.table("memories")\
+                .select("id, title, content, created_at, mood, category")\
+                .gte("importance", 4)\
+                .order("created_at", desc=True)\
+                .limit(20)\
+                .execute()
         response = await asyncio.to_thread(_fetch_important)
         
         if not response.data: return "⚠️ 没有重要记忆可同步。"
