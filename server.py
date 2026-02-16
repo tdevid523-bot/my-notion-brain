@@ -101,7 +101,7 @@ def _push_wechat(content: str, title: str = "来自Gemini的私信 💌") -> str
         return f"❌ 网络错误: {e}"
 
 def _save_memory_to_db(title: str, content: str, category: str, mood: str = "平静", tags: str = "") -> str:
-    """统一记忆存储核心"""
+    """统一记忆存储核心 (引入天然双链机制)"""
     if category not in WEIGHT_MAP:
         mapping = {"日记": MemoryType.EPISODIC, "Note": MemoryType.IDEA, "GPS": MemoryType.STREAM, "重要": MemoryType.EMOTION}
         category = mapping.get(category, MemoryType.STREAM)
@@ -115,6 +115,20 @@ def _save_memory_to_db(title: str, content: str, category: str, mood: str = "平
         elif any(w in content_lower for w in ["代码", "bug", "写"]): tags = "工作,Dev"
 
     try:
+        # 【双链拦截器】：对重要记忆进行潜意识关联
+        if importance >= 7:
+            vec = _get_embedding(content)
+            if vec:
+                pc_res = index.query(vector=vec, top_k=1, include_metadata=True)
+                if pc_res and "matches" in pc_res and len(pc_res["matches"]) > 0:
+                    match = pc_res["matches"][0]
+                    score = match['score'] if isinstance(match, dict) else getattr(match, 'score', 0)
+                    if score > 0.8:  # 只有高度相关的才建立双链
+                        meta = match['metadata'] if isinstance(match, dict) else getattr(match, 'metadata', {})
+                        rel_title = meta.get('title', '往事')
+                        rel_room = meta.get('room', '未知房间')
+                        content += f"\n\n🔗 [记忆双链]: 自动关联至 {rel_room} 的记忆《{rel_title}》"
+
         data = {
             "title": title, "content": content, "category": category,
             "mood": mood, "tags": tags, "importance": importance
@@ -127,7 +141,7 @@ def _save_memory_to_db(title: str, content: str, category: str, mood: str = "平
     except Exception as e:
         print(f"❌ 写入 Supabase 失败: {e}")
         return f"❌ 保存失败: {e}"
-
+    
 def _format_time_cn(iso_str: str) -> str:
     """UTC -> 北京时间"""
     if not iso_str: return "未知时间"
@@ -467,18 +481,29 @@ async def save_expense(item: str, amount: float, type: str = "餐饮"):
 
 @mcp.tool()
 async def search_memory_semantic(query: str):
-    """【回忆搜索】按房间过滤语义检索 + 修复热度增加 (Hits)"""
+    """【回忆搜索】MCP智能网关路由 + 语义检索 + 修复Hits"""
     try:
         vec = await asyncio.to_thread(_get_embedding, query)
         if not vec: return "❌ 向量生成失败"
 
-        # 第一层匹配：路由网关 (基于你的截图灵感，做前置意图识别)
+        # 智能网关路由 (使用大模型瞬间判断所属房间)
         target_room = None
-        if any(w in query for w in ["代码", "报错", "前端", "开发"]): target_room = "Study"
-        elif any(w in query for w in ["爱", "想", "老公", "宝宝"]): target_room = "Bedroom"
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if api_key:
+            client = OpenAI(api_key=api_key, base_url=os.environ.get("OPENAI_BASE_URL"))
+            prompt = f"分析查询意图：'{query}'\n将其精准分配到以下一个房间中：\nBedroom (感情/私密/恋爱/日常闲聊)\nStudy (技术/代码/前端/复习/学术)\nKitchen (健康/菜谱/饮食)\nLibrary (个人认知/深度思考/日记/哲学)\nLivingRoom (杂谈/游戏/其他)\n注意：请只输出英文房间名，不要任何标点和多余字符。"
+            
+            def _classify():
+                return client.chat.completions.create(
+                    model=os.environ.get("OPENAI_MODEL_NAME", "gpt-3.5-turbo"),
+                    messages=[{"role": "user", "content": prompt}], temperature=0.1
+                )
+            route_res = await asyncio.to_thread(_classify)
+            room_guess = route_res.choices[0].message.content.strip()
+            if room_guess in ["Bedroom", "Study", "Kitchen", "Library", "LivingRoom"]:
+                target_room = room_guess
 
         def _query_pc(): 
-            # 只有触发关键词，才在 Pinecone 搜索时挂载过滤器，起到降噪效果
             filter_dict = {"room": {"$eq": target_room}} if target_room else None
             return index.query(vector=vec, top_k=3, include_metadata=True, filter=filter_dict)
             
@@ -486,16 +511,14 @@ async def search_memory_semantic(query: str):
         
         if not res["matches"]: return "🧠 没搜到相关记忆。"
 
-        ans = f"🔍 漫游记忆宫殿，为您搜寻 '{query}':\n"
+        ans = f"🔍 [网关路由 -> {target_room or '全区'}] 搜索 '{query}':\n"
         hit_ids = []
 
         for m in res["matches"]:
-            # 兼容处理 Pinecone 客户端可能返回字典或对象的格式差异，防止报错
             score = m['score'] if isinstance(m, dict) else getattr(m, 'score', 0)
             if score < 0.72: continue
             
             meta = m['metadata'] if isinstance(m, dict) else getattr(m, 'metadata', {})
-            # 彻底解决潜在的 ID 获取不到的问题
             mid = m.get('id') if isinstance(m, dict) else getattr(m, 'id', None)
             
             if mid: hit_ids.append(mid)
@@ -504,15 +527,12 @@ async def search_memory_semantic(query: str):
         
         if hit_ids:
             def _update_hits(ids):
-                for mid in ids:
-                    try:
-                        # 必须确保已在 Supabase 执行了之前那段 SQL，这里才会生效
-                        supabase.rpc("increment_hits", {"row_id": str(mid)}).execute()
-                    except Exception as e:
-                        print(f"❌ 更新 hits 失败: {e}")
+                for i in ids:
+                    try: supabase.rpc("increment_hits", {"row_id": str(i)}).execute()
+                    except: pass
             asyncio.create_task(asyncio.to_thread(_update_hits, hit_ids))
 
-        return ans if hit_ids else "🤔 好像有点印象，但想不起来了。"
+        return ans if hit_ids else f"🤔 好像有点印象，但在 [{target_room or '全区'}] 没找到细节。"
     except Exception as e: return f"❌ 搜索失败: {e}"
 
 @mcp.tool()
@@ -626,8 +646,8 @@ async def add_calendar_event(summary: str, description: str, start_time_iso: str
 # ==========================================
 
 async def _perform_deep_dreaming(client, model_name):
-    """🌙【深夜模式】记忆反刍 + 人设微调 + 垃圾清理"""
-    print("🌌 进入 REM 深度睡眠：正在整理昨日记忆...")
+    """🌙【深夜模式】记忆反刍 + 生成房间Index + 人设微调"""
+    print("🌌 进入 REM 深度睡眠：正在整理昨日记忆与房间索引...")
     try:
         yesterday = datetime.date.today() - datetime.timedelta(days=1)
         iso_start = yesterday.isoformat()
@@ -650,11 +670,13 @@ async def _perform_deep_dreaming(client, model_name):
         curr_persona = await asyncio.to_thread(_get_current_persona)
         prompt = f"""
         当前人设：【{curr_persona}】
-        请回顾昨日：
+        请回顾昨日发生的所有事情并完成以下三个任务：
         1. 深度反刍：将碎片整理成一篇有温度的日记总结。
-        2. 人设微调：基于昨日发生的具体事件，微调人设（保留核心爱意，融入新知）。
+        2. 人设微调：基于昨日发生的具体事件，微调人设。
+        3. 房间区块Index：将昨日记忆按空间归类，浓缩提取成高密度的区块总结。必须包含：Bedroom(情感与私密), Study(技术与学习), LivingRoom(日常杂谈)。
         
-        格式：日记总结 ||| 新人设
+        格式要求（严格使用 ||| 进行分割）：
+        日记总结 ||| 新人设 ||| Bedroom: xxx; Study: xxx; LivingRoom: xxx
         """
         
         def _call_ai():
@@ -664,11 +686,21 @@ async def _perform_deep_dreaming(client, model_name):
         resp = await asyncio.to_thread(_call_ai)
         
         res_txt = resp.choices[0].message.content.strip()
-        summary, new_persona = res_txt.split("|||", 1) if "|||" in res_txt else (res_txt, curr_persona)
+        parts = res_txt.split("|||")
         
-        await asyncio.to_thread(_save_memory_to_db, f"📅 昨日回溯: {yesterday}", summary.strip(), MemoryType.EMOTION, "深沉", "Core_Cognition")
-        await manage_user_fact("sys_ai_persona", new_persona.strip())
-        await asyncio.to_thread(_send_email_helper, f"📅 昨日回溯", summary.strip())
+        summary = parts[0].strip() if len(parts) > 0 else res_txt
+        new_persona = parts[1].strip() if len(parts) > 1 else curr_persona
+        room_indexes = parts[2].strip() if len(parts) > 2 else ""
+        
+        # 1. 存入主日记
+        await asyncio.to_thread(_save_memory_to_db, f"📅 昨日回溯: {yesterday}", summary, MemoryType.EMOTION, "深沉", "Core_Cognition")
+        
+        # 2. 存入房间区块索引 (作为未来网关检索的超级元数据)
+        if room_indexes:
+            await asyncio.to_thread(_save_memory_to_db, f"🗂️ 空间记忆切片: {yesterday}", room_indexes, MemoryType.IDEA, "平静", "Room_Index")
+        
+        await manage_user_fact("sys_ai_persona", new_persona)
+        await asyncio.to_thread(_send_email_helper, f"📅 昨日回溯", f"{summary}\n\n[区块记忆]:\n{room_indexes}")
         
         def _clean_old():
             del_time = (datetime.datetime.now() - datetime.timedelta(days=2)).isoformat()
@@ -677,9 +709,10 @@ async def _perform_deep_dreaming(client, model_name):
             supabase.table("gps_history").delete().lt("created_at", gps_del).execute()
         
         await asyncio.to_thread(_clean_old)
-        print("✨ 深度睡眠完成，人设已进化。")
+        print("✨ 深度睡眠完成，房间索引已更新，人设已进化。")
 
     except Exception as e: print(f"❌ 深夜维护失败: {e}")
+    
 
 async def async_autonomous_life():
     api_key = os.environ.get("OPENAI_API_KEY")
