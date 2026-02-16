@@ -13,7 +13,7 @@ import concurrent.futures
 # 📚 核心依赖库
 from mcp.server.fastmcp import FastMCP
 from pinecone import Pinecone
-from fastembed import TextEmbedding
+# 已弃用本地 fastembed，全面接入云端极速向量
 from starlette.types import ASGIApp, Scope, Receive, Send
 # 谷歌日历依赖
 from google.oauth2 import service_account
@@ -48,7 +48,7 @@ supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Pinecone & Embedding
 pc = Pinecone(api_key=PINECONE_KEY)
 index = pc.Index("notion-brain")
-model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+# 不再本地加载沉重的 embedding 模型，释放内存
 
 # 实例化 MCP 服务
 mcp = FastMCP("Notion Brain V3")
@@ -164,10 +164,32 @@ def _send_email_helper(subject: str, content: str, is_html: bool = False) -> str
     except Exception as e: return f"❌ 发送失败: {e}"
 
 def _get_embedding(text: str):
+    """调用硅基流动云端 Embedding API，极速生成向量，告别本地下载卡顿"""
     try:
-        return list(model.embed([text]))[0].tolist()
+        api_key = os.environ.get("SILICON_API_KEY")
+        if not api_key:
+            print("❌ 缺少 SILICON_API_KEY，无法生成向量")
+            return []
+        
+        url = "https://api.siliconflow.cn/v1/embeddings"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "BAAI/bge-m3", # 硅基流动的顶级多语言向量模型
+            "input": text,
+            "encoding_format": "float"
+        }
+        
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        return data["data"][0]["embedding"]
+        
     except Exception as e:
-        print(f"❌ Embedding 失败: {e}")
+        print(f"❌ 云端 Embedding 失败: {e}")
         return []
 
 def _get_current_persona() -> str:
