@@ -171,13 +171,13 @@ def _get_embedding(text: str):
             print("❌ 缺少 DOUBAO_API_KEY，无法生成向量")
             return []
             
-        # 豆包要求使用创建的接入点 ID (Endpoint)，格式如 ep-2024xxxx-yyyy
         embed_endpoint = os.environ.get("DOUBAO_EMBEDDING_EP")
         if not embed_endpoint:
             print("❌ 缺少 DOUBAO_EMBEDDING_EP，请填入火山引擎的接入点")
             return []
         
-        url = "https://ark.volces.com/api/v3/embeddings"
+        # 👑 关键修复：换成绝对能访问通的火山引擎北京机房精确地址
+        url = "https://ark.cn-beijing.volces.com/api/v3/embeddings"
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
