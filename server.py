@@ -536,7 +536,7 @@ async def search_memory_semantic(query: str):
     except Exception as e: return f"❌ 搜索失败: {e}"
 
 @mcp.tool()
-async def sync_memory_index():
+async def sync_memory_index(dummy: str = ""):
     """【记忆整理】将重要记忆(>=4)同步到 Pinecone（已添加天然分区）"""
     try:
         # 修改点: 在 select 中增加 category 字段，用于后续的房间划分
