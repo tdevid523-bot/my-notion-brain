@@ -504,8 +504,9 @@ async def search_memory_semantic(query: str):
                 target_room = room_guess
 
         def _query_pc(): 
-            filter_dict = {"room": {"$eq": target_room}} if target_room else None
-            return index.query(vector=vec, top_k=3, include_metadata=True, filter=filter_dict)
+            # 🛑 强制移除 filter，先验证向量能不能匹配上
+            print(f"DEBUG: 正在全库搜索，忽略房间: {target_room}")
+            return index.query(vector=vec, top_k=5, include_metadata=True) # 去掉了 filter=...
             
         res = await asyncio.to_thread(_query_pc)
         if not res["matches"]: return "🧠 没搜到相关记忆。"
