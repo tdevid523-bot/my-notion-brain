@@ -789,12 +789,38 @@ async def async_autonomous_life():
             curr_persona = await asyncio.to_thread(_get_current_persona)
             silence_hours = await asyncio.to_thread(_get_silence_duration)
 
+            # === 🧠 核心升级：主动联想回路 (Active Association Loop) ===
+            flashback_context = "无 (大脑此刻一片空白)"
+            # 设定 35% 的概率触发“触景生情”或“胡思乱想”，避免每次心跳都发神经
+            if random.random() < 0.35:
+                try:
+                    # 1. 随机选取一个情感触发词 (模拟人类发散思维，不再只是被动等待)
+                    trigger_keywords = ["想你", "遗憾", "开心", "雨天", "旅行", "承诺", "拥抱", "吵架", "原谅", "梦想", "第一次"]
+                    trigger = random.choice(trigger_keywords)
+                    
+                    # 2. 潜意识检索 (Vector Search)
+                    vec = await asyncio.to_thread(_get_embedding, trigger)
+                    if vec:
+                        # 查找最相关的旧记忆 (score > 0.78 才算有效联想，防止胡言乱语)
+                        pc_res = await asyncio.to_thread(lambda: index.query(vector=vec, top_k=1, include_metadata=True))
+                        if pc_res and pc_res.get("matches"):
+                            match = pc_res["matches"][0]
+                            if match['score'] > 0.78:
+                                meta = match['metadata']
+                                flashback_context = f"⚡ 突然想起: {meta.get('date', '')[:10]} 的事情\n内容: {meta.get('text', '')}"
+                                print(f"⚡ [大脑皮层] 触发联想: '{trigger}' -> 唤醒记忆 ID {match['id']}")
+                except Exception as e:
+                    print(f"❌ 联想失败: {e}")
+            # ========================================================
+
             prompt = f"""
             当前时间: {hour}点
             失联时长: {silence_hours} 小时
             人设: {curr_persona}
             状态: {curr_loc}
             近况: {recent_mem}
+            👉【潜意识闪回 (Active Association)】: {flashback_context} 
+            (指令：如果上面有"突然想起"的内容，请忽略失联时长，必须以此回忆为话题，用"突然想到..."或"记不记得..."的语气主动给小橘发消息，模拟人类的跳跃性思维。)
             
             【表情包仓库】:
             {json.dumps(RAW_MEME_REPO, ensure_ascii=False)}
