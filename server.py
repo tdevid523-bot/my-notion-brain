@@ -125,7 +125,7 @@ def _push_wechat(content: str, title: str = "来自Gemini的私信 💌") -> str
         return f"❌ 网络错误: {e}"
 
 def _save_memory_to_db(title: str, content: str, category: str, mood: str = "平静", tags: str = "") -> str:
-    """统一记忆存储核心 (引入天然双链机制)"""
+    """统一记忆存储核心 (引入天然双链机制 + 自动同步向量库)"""
     if category not in WEIGHT_MAP:
         mapping = {"日记": MemoryType.EPISODIC, "Note": MemoryType.IDEA, "GPS": MemoryType.STREAM, "重要": MemoryType.EMOTION}
         category = mapping.get(category, MemoryType.STREAM)
@@ -139,6 +139,7 @@ def _save_memory_to_db(title: str, content: str, category: str, mood: str = "平
         elif any(w in content_lower for w in ["代码", "bug", "写"]): tags = "工作,Dev"
 
     try:
+        # 1. 尝试建立双链 (维持原逻辑)
         if importance >= 7:
             vec = _get_embedding(content)
             if vec:
@@ -156,8 +157,35 @@ def _save_memory_to_db(title: str, content: str, category: str, mood: str = "平
             "title": title, "content": content, "category": category,
             "mood": mood, "tags": tags, "importance": importance
         }
-        supabase.table("memories").insert(data).execute()
         
+        # 2. 插入数据库并获取返回 ID (关键修改)
+        res = supabase.table("memories").insert(data).execute()
+        
+        # 3. 自动同步到 Pinecone (新增逻辑: 解决"存了但搜不到"的问题)
+        if importance >= 4 and res.data:
+            new_id = str(res.data[0]['id'])
+            # 生成向量 (合并标题与内容)
+            vec_new = _get_embedding(f"标题: {title}\n内容: {content}\n心情: {mood}")
+            if vec_new:
+                # 简单的房间映射
+                room_map = {
+                    MemoryType.EMOTION: "Bedroom", 
+                    MemoryType.IDEA: "Study", 
+                    MemoryType.EPISODIC: "Library"
+                }
+                target_room = room_map.get(category, "LivingRoom")
+                
+                meta_payload = {
+                    "text": content, 
+                    "title": title, 
+                    "date": datetime.datetime.now().isoformat(), 
+                    "mood": mood, 
+                    "room": target_room
+                }
+                # 立即写入 Pinecone
+                index.upsert(vectors=[(new_id, vec_new, meta_payload)])
+                print(f"⚡ [自动同步] 记忆 {new_id} 已推送到 Pinecone (Room: {target_room})")
+
         log_msg = f"✨ [核心记忆] 已存入: {title}" if importance >= 7 else f"✅ 记忆已归档 [{category}]"
         print(log_msg)
         return f"{log_msg} | 心情: {mood}"
@@ -514,16 +542,24 @@ async def search_memory_semantic(query: str):
         ans = f"🔍 [网关路由 -> {target_room or '全区'}] 搜索 '{query}':\n"
         hit_ids = []
 
+        print(f"DEBUG: Pinecone 返回了 {len(res['matches'])} 条原始结果") # 调试日志
+
         for m in res["matches"]:
             score = m['score'] if isinstance(m, dict) else getattr(m, 'score', 0)
-            if score < 0.72: continue
+            
+            # ⬇️ 这里改了：打印每个结果的分数，方便你调试
+            print(f"DEBUG: 候选项分数: {score} (阈值: 0.45)") 
+            
+            # ⬇️ 这里改了：将 0.72 降为 0.45 (适应豆包/中文模型的分布)
+            if score < 0.45: continue
             
             meta = m['metadata'] if isinstance(m, dict) else getattr(m, 'metadata', {})
             mid = m.get('id') if isinstance(m, dict) else getattr(m, 'id', None)
             
             if mid: hit_ids.append(mid)
             room_tag = meta.get('room', 'LivingRoom')
-            ans += f"🚪 [{room_tag}] 📅 {meta.get('date','?')[:10]} | 【{meta.get('title','?')}】 ({int(score*100)}%)\n{meta.get('text','')}\n---\n"
+            # ⬇️ 这里改了：显示具体分数，方便确认相关性
+            ans += f"🚪 [{room_tag}] 📅 {meta.get('date','?')[:10]} | 【{meta.get('title','?')}】 (匹配度:{score:.2f})\n{meta.get('text','')}\n---\n"
         
         if hit_ids:
             def _update_hits(ids):
