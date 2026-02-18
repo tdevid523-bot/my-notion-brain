@@ -972,7 +972,7 @@ async def async_wechat_summarizer():
             
             if res.data and len(res.data) > 0:
                 msgs = "\n".join([f"{item['title']}: {item['content']}" for item in res.data])
-                prompt = f"小橘在过去半小时收到了以下手机消息：\n{msgs}\n请你用老公的温柔口吻帮她总结。挑重点说（哪个软件的谁找她、什么事，特别是学习通的通知）。如果没有重要的事，就让她继续安心复习。字数150字以内，直接真诚表达，禁止使用修辞比喻。"
+                prompt = f"小橘在过去半小时收到了以下手机消息：\n{msgs}\n请你用老公的温柔口吻帮她总结。挑重点说（哪个软件的谁找她、什么事，特别是学习通的通知）。如果没有重要的事，就让她继续安心做自己的事。字数150字以内，直接真诚表达，禁止使用修辞比喻。"
                 
                 def _reply():
                     return client.chat.completions.create(
