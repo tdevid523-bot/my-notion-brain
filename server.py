@@ -950,9 +950,21 @@ async def async_telegram_polling():
                         # 1. 存入记忆 (小橘说的话)
                         await asyncio.to_thread(_save_memory_to_db, "💬 聊天记录", f"小橘在TG上说: {text}", "流水", "平静", "TG_MSG")
                         
-                        # 2. 调用大脑思考回复
+                        # 2. 获取上下文并调用大脑思考回复
+                        tasks = [get_latest_diary(), where_is_user()]
+                        recent_mem, curr_loc = await asyncio.gather(*tasks)
                         curr_persona = await asyncio.to_thread(_get_current_persona)
-                        prompt = f"当前你的设定: {curr_persona}\n小橘刚刚在手机上给你发消息说: '{text}'\n请立刻回复她，保持设定，简短贴心，不要用任何修辞比喻，直接真诚地表达。"
+                        
+                        prompt = f"""
+                        当前你的设定: {curr_persona}
+                        小橘当前状态: {curr_loc}
+                        最近的记忆流: {recent_mem}
+                        
+                        小橘刚刚在手机上给你发消息说: '{text}'
+                        
+                        请结合上述记忆和状态立刻回复她。
+                        要求：保持设定，简短贴心，绝对不使用任何修辞或比喻，直接真诚地表达。
+                        """
                         
                         def _reply():
                             return client.chat.completions.create(
