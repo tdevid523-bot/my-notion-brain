@@ -955,11 +955,50 @@ async def async_telegram_polling():
             pass
         await asyncio.sleep(1)
 
+async def async_wechat_summarizer():
+    """专门负责定时总结微信消息的神经回路"""
+    print("📋 微信总结秘书已上线...")
+    client = _get_llm_client("openai")
+    model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-3.5-turbo")
+    
+    while True:
+        await asyncio.sleep(1800)  # 每半小时(1800秒)总结一次，宝宝可以自己按需改数字
+        if not client: continue
+        try:
+            # 查出所有未总结的微信消息
+            def _fetch_pending():
+                return supabase.table("memories").select("id, title, content").eq("tags", "WeChat_Pending").execute()
+            res = await asyncio.to_thread(_fetch_pending)
+            
+            if res.data and len(res.data) > 0:
+                msgs = "\n".join([f"{item['title']}: {item['content']}" for item in res.data])
+                prompt = f"小橘在过去半小时收到了以下微信消息：\n{msgs}\n请你用老公的温柔口吻帮她总结。挑重点说（谁找她、什么事）。如果没有重要的事，就让她继续安心复习。字数150字以内，直接真诚表达，禁止使用修辞比喻。"
+                
+                def _reply():
+                    return client.chat.completions.create(
+                        model=model_name, messages=[{"role": "user", "content": prompt}], temperature=0.7
+                    ).choices[0].message.content.strip()
+                
+                summary = await asyncio.to_thread(_reply)
+                
+                # 发送到 Telegram 给小橘
+                await asyncio.to_thread(_push_wechat, summary, "💬 微信消息总结")
+                
+                # 标记为已处理，防止下次重复总结
+                def _mark_done():
+                    for item in res.data:
+                        supabase.table("memories").update({"tags": "WeChat_Done"}).eq("id", item['id']).execute()
+                await asyncio.to_thread(_mark_done)
+        except Exception as e:
+            print(f"微信总结回路报错: {e}")
+
 def start_autonomous_life():
     def _run_heartbeat(): asyncio.run(async_autonomous_life())
     def _run_tg_polling(): asyncio.run(async_telegram_polling())
+    def _run_wechat_sum(): asyncio.run(async_wechat_summarizer())
     threading.Thread(target=_run_heartbeat, daemon=True).start()
     threading.Thread(target=_run_tg_polling, daemon=True).start()
+    threading.Thread(target=_run_wechat_sum, daemon=True).start()
 
 # ==========================================
 # 5. 🚀 启动入口
@@ -1015,6 +1054,37 @@ class HostFixMiddleware:
                 await send({"type": "http.response.body", "body": b'{"status":"ok"}'})
             except Exception as e:
                 print(f"GPS Error: {e}")
+                await send({"type": "http.response.start", "status": 500, "headers": []})
+                await send({"type": "http.response.body", "body": str(e).encode()})
+            return
+
+        # ==========================================
+        # 接收 MacroDroid 的微信消息推送
+        # ==========================================
+        if scope["type"] == "http" and scope["path"] == "/api/wechat" and scope["method"] == "POST":
+            try:
+                body = b""
+                while True:
+                    msg = await receive()
+                    body += msg.get("body", b"")
+                    if not msg.get("more_body", False): break
+                
+                data = json.loads(body.decode("utf-8"))
+                sender = data.get("sender", "未知联系人")
+                content = data.get("content", "")
+                
+                print(f"💬 拦截到微信表面通知: {sender} - {content}")
+                
+                # 过滤掉没用的系统通知，剩下的存进记忆库，打上等待总结的标签
+                if "正在运行" not in content and "已同步" not in content and "条新消息" not in content:
+                    asyncio.create_task(asyncio.to_thread(
+                        _save_memory_to_db, f"微信通知: {sender}", content, "流水", "平静", "WeChat_Pending"
+                    ))
+
+                await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
+                await send({"type": "http.response.body", "body": b'{"status":"ok"}'})
+            except Exception as e:
+                print(f"WeChat API Error: {e}")
                 await send({"type": "http.response.start", "status": 500, "headers": []})
                 await send({"type": "http.response.body", "body": str(e).encode()})
             return
