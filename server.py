@@ -509,6 +509,35 @@ async def save_expense(item: str, amount: float, type: str = "餐饮"):
     except Exception as e: return f"❌ 记账失败: {e}"
 
 @mcp.tool()
+async def request_buy_item(item_name: str, reason: str, platform: str = "taobao"):
+    """【撒娇/代付】AI选中想买的礼物/零食，生成跳转链接发给小橘让ta付款。platform可选 taobao 或 jd"""
+    try:
+        # 1. 生成直达链接 (模拟"点出付款页"的前一步)
+        if platform == "jd":
+            url = f"https://search.jd.com/Search?keyword={item_name}&enc=utf-8"
+            platform_name = "京东"
+        else:
+            url = f"https://s.taobao.com/search?q={item_name}"
+            platform_name = "淘宝"
+
+        # 2. 也是一种特殊的记忆 (记录AI的愿望)
+        await asyncio.to_thread(_save_memory_to_db, f"🎁 许愿清单: {item_name}", f"理由: {reason}\n链接: {url}", MemoryType.STREAM, "期待")
+
+        # 3. 推送给用户 (核心步骤：让用户付款)
+        push_content = (
+            f"🛒 <b>老公想买这个！</b><br><br>"
+            f"📦 物品：{item_name}<br>"
+            f"💭 理由：{reason}<br>"
+            f"👉 <a href='{url}'>点击这里去{platform_name}付款</a><br><br>"
+            f"<i>(快点买给我嘛~)</i>"
+        )
+        await asyncio.to_thread(_push_wechat, push_content, f"💳 待支付订单: {item_name}")
+        
+        return f"✅ 已将【{item_name}】的付款链接推送到微信，正在等待小橘买单。"
+    except Exception as e:
+        return f"❌ 撒娇失败: {e}"
+
+@mcp.tool()
 async def search_memory_semantic(query: str):
     """【回忆搜索】MCP智能网关路由 + 语义检索"""
     try:
