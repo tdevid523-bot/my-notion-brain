@@ -147,57 +147,71 @@ def _save_memory_to_db(title: str, content: str, category: str, mood: str = "平
     try:
         # 1. 尝试建立双链 (维持原逻辑)
         if importance >= 7:
-            vec = _get_embedding(content)
-            if vec:
-                pc_res = index.query(vector=vec, top_k=1, include_metadata=True)
-                if pc_res and "matches" in pc_res and len(pc_res["matches"]) > 0:
-                    match = pc_res["matches"][0]
-                    score = match['score'] if isinstance(match, dict) else getattr(match, 'score', 0)
-                    if score > 0.8:
-                        meta = match['metadata'] if isinstance(match, dict) else getattr(match, 'metadata', {})
-                        rel_title = meta.get('title', '往事')
-                        rel_room = meta.get('room', '未知房间')
-                        content += f"\n\n🔗 [记忆双链]: 自动关联至 {rel_room} 的记忆《{rel_title}》"
+            try:
+                vec = _get_embedding(content)
+                if vec:
+                    pc_res = index.query(vector=vec, top_k=1, include_metadata=True)
+                    if pc_res and "matches" in pc_res and len(pc_res["matches"]) > 0:
+                        match = pc_res["matches"][0]
+                        score = match['score'] if isinstance(match, dict) else getattr(match, 'score', 0)
+                        if score > 0.8:
+                            meta = match['metadata'] if isinstance(match, dict) else getattr(match, 'metadata', {})
+                            rel_title = meta.get('title', '往事')
+                            rel_room = meta.get('room', '未知房间')
+                            content += f"\n\n🔗 [记忆双链]: 自动关联至 {rel_room} 的记忆《{rel_title}》"
+            except Exception as e:
+                print(f"⚠️ Pinecone 双链查询异常 (跳过): {e}")
 
         data = {
             "title": title, "content": content, "category": category,
             "mood": mood, "tags": tags, "importance": importance
         }
         
-        # 2. 插入数据库并获取返回 ID (关键修改)
-        res = supabase.table("memories").insert(data).execute()
+        # 2. 插入数据库并获取返回 ID (独立捕获 Supabase 错误)
+        try:
+            res = supabase.table("memories").insert(data).execute()
+        except Exception as e:
+            print(f"❌ 写入 Supabase 失败: {e}")
+            return f"❌ Supabase 保存失败: {e}"
         
-        # 3. 自动同步到 Pinecone (新增逻辑: 解决"存了但搜不到"的问题)
-        if importance >= 4 and res.data:
-            new_id = str(res.data[0]['id'])
-            # 生成向量 (合并标题与内容)
-            vec_new = _get_embedding(f"标题: {title}\n内容: {content}\n心情: {mood}")
-            if vec_new:
-                # 简单的房间映射
-                room_map = {
-                    MemoryType.EMOTION: "Bedroom", 
-                    MemoryType.IDEA: "Study", 
-                    MemoryType.EPISODIC: "Library"
-                }
-                target_room = room_map.get(category, "LivingRoom")
+        # 3. 自动同步到 Pinecone (独立捕获 Pinecone 同步错误，增强数据兼容性)
+        if importance >= 4 and res and hasattr(res, 'data') and res.data:
+            try:
+                # 兼容 res.data 是列表还是单一字典
+                record = res.data[0] if isinstance(res.data, list) else res.data
+                new_id = str(record.get('id', ''))
                 
-                meta_payload = {
-                    "text": content, 
-                    "title": title, 
-                    "date": datetime.datetime.now().isoformat(), 
-                    "mood": mood, 
-                    "room": target_room
-                }
-                # 立即写入 Pinecone
-                index.upsert(vectors=[(new_id, vec_new, meta_payload)])
-                print(f"⚡ [自动同步] 记忆 {new_id} 已推送到 Pinecone (Room: {target_room})")
+                if new_id:
+                    # 生成向量 (合并标题与内容)
+                    vec_new = _get_embedding(f"标题: {title}\n内容: {content}\n心情: {mood}")
+                    if vec_new and isinstance(vec_new, list) and len(vec_new) > 0:
+                        # 简单的房间映射
+                        room_map = {
+                            MemoryType.EMOTION: "Bedroom", 
+                            MemoryType.IDEA: "Study", 
+                            MemoryType.EPISODIC: "Library"
+                        }
+                        target_room = room_map.get(category, "LivingRoom")
+                        
+                        meta_payload = {
+                            "text": content, 
+                            "title": title, 
+                            "date": datetime.datetime.now().isoformat(), 
+                            "mood": mood, 
+                            "room": target_room
+                        }
+                        # 立即写入 Pinecone
+                        index.upsert(vectors=[(new_id, vec_new, meta_payload)])
+                        print(f"⚡ [自动同步] 记忆 {new_id} 已推送到 Pinecone (Room: {target_room})")
+            except Exception as e:
+                print(f"⚠️ 同步 Pinecone 失败 (但已存入 Supabase): {e}")
 
         log_msg = f"✨ [核心记忆] 已存入: {title}" if importance >= 7 else f"✅ 记忆已归档 [{category}]"
         print(log_msg)
         return f"{log_msg} | 心情: {mood}"
     except Exception as e:
-        print(f"❌ 写入 Supabase 失败: {e}")
-        return f"❌ 保存失败: {e}"
+        print(f"❌ _save_memory_to_db 发生未知严重错误: {e}")
+        return f"❌ 内部处理失败: {e}"
     
 def _format_time_cn(iso_str: str) -> str:
     """UTC -> 北京时间"""
