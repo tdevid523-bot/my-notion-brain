@@ -771,7 +771,8 @@ async def async_autonomous_life():
         await _perform_deep_dreaming(client, model_name)
 
     while True:
-        sleep_s = random.randint(900, 2700)
+        # ⏱️ 修改：大幅延长心跳间隔以节省Token (改为 1小时 ~ 3小时 随机)
+        sleep_s = random.randint(3600, 10800)
         await asyncio.sleep(sleep_s)
         
         now = datetime.datetime.now()
