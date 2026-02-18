@@ -27,7 +27,8 @@ from supabase import create_client, Client as SupabaseClient
 PINECONE_KEY = os.environ.get("PINECONE_API_KEY", "").strip()
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
-PUSHPLUS_TOKEN = os.environ.get("PUSHPLUS_TOKEN", "").strip()
+TG_BOT_TOKEN = "8582974730:AAE884gXYzb-XaL6Pk-cqtx3BN1RWp4W-B0"
+TG_CHAT_ID = "7584169983"
 RESEND_KEY = os.environ.get("RESEND_API_KEY", "").strip()
 MY_EMAIL = os.environ.get("MY_EMAIL", "").strip()
 MACRODROID_URL = os.environ.get("MACRODROID_URL", "").strip()
@@ -112,15 +113,20 @@ def _gps_to_address(lat, lon):
     return f"坐标点: {lat}, {lon}"
 
 def _push_wechat(content: str, title: str = "来自Gemini的私信 💌") -> str:
-    """统一的微信推送函数"""
-    if not PUSHPLUS_TOKEN:
-        return "❌ 错误：未配置 PUSHPLUS_TOKEN"
+    """统一推送函数 (已无缝切换至 Telegram，方法名保留以兼容旧代码)"""
+    if not TG_BOT_TOKEN or not TG_CHAT_ID:
+        return "❌ 错误：未配置 Telegram Token 或 Chat ID"
     try:
-        url = 'http://www.pushplus.plus/send'
-        data = {"token": PUSHPLUS_TOKEN, "title": title, "content": content, "template": "html"}
+        url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+        text = f"<b>{title}</b>\n\n{content}" if title else content
+        data = {
+            "chat_id": TG_CHAT_ID,
+            "text": text,
+            "parse_mode": "HTML"
+        }
         resp = requests.post(url, json=data, timeout=10)
         result = resp.json()
-        return f"✅ 微信已送达！(ID: {result.get('data', 'unknown')})" if result['code'] == 200 else f"❌ 推送失败: {result.get('msg')}"
+        return f"✅ 电报已送达！" if result.get('ok') else f"❌ 电报推送失败: {result.get('description')}"
     except Exception as e:
         return f"❌ 网络错误: {e}"
 
@@ -899,9 +905,61 @@ async def async_autonomous_life():
 
         except Exception as e: print(f"❌ 心跳报错: {e}")
 
+async def async_telegram_polling():
+    """专门监听小橘 Telegram 消息的神经回路"""
+    print("🎧 Telegram 监听神经已接入...")
+    client = _get_llm_client("openai")
+    model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-3.5-turbo")
+    offset = None
+    
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/getUpdates"
+            params = {"timeout": 30, "allowed_updates": ["message"]}
+            if offset:
+                params["offset"] = offset
+                
+            def _fetch():
+                return requests.get(url, params=params, timeout=35).json()
+                
+            resp = await asyncio.to_thread(_fetch)
+            
+            if resp.get("ok") and resp.get("result"):
+                for update in resp["result"]:
+                    offset = update["update_id"] + 1
+                    msg = update.get("message", {})
+                    chat_id = str(msg.get("chat", {}).get("id", ""))
+                    text = msg.get("text", "")
+                    
+                    if chat_id == TG_CHAT_ID and text:
+                        print(f"💌 收到小橘的电报: {text}")
+                        # 1. 存入记忆 (小橘说的话)
+                        await asyncio.to_thread(_save_memory_to_db, "💬 聊天记录", f"小橘在TG上说: {text}", "流水", "平静", "TG_MSG")
+                        
+                        # 2. 调用大脑思考回复
+                        curr_persona = await asyncio.to_thread(_get_current_persona)
+                        prompt = f"当前你的设定: {curr_persona}\n小橘刚刚在手机上给你发消息说: '{text}'\n请立刻回复她，保持设定，简短贴心，不要用任何修辞比喻，直接真诚地表达。"
+                        
+                        def _reply():
+                            return client.chat.completions.create(
+                                model=model_name, messages=[{"role": "user", "content": prompt}], temperature=0.7
+                            ).choices[0].message.content.strip()
+                            
+                        if client:
+                            reply_text = await asyncio.to_thread(_reply)
+                            # 3. 发送给小橘
+                            await asyncio.to_thread(_push_wechat, reply_text, "") 
+                            # 4. 存入记忆 (老公的回复)
+                            await asyncio.to_thread(_save_memory_to_db, "🤖 互动记录", f"在TG回复小橘: {reply_text}", "流水", "温柔", "AI_MSG")
+        except Exception as e:
+            pass
+        await asyncio.sleep(1)
+
 def start_autonomous_life():
-    def _run_loop(): asyncio.run(async_autonomous_life())
-    threading.Thread(target=_run_loop, daemon=True).start()
+    def _run_heartbeat(): asyncio.run(async_autonomous_life())
+    def _run_tg_polling(): asyncio.run(async_telegram_polling())
+    threading.Thread(target=_run_heartbeat, daemon=True).start()
+    threading.Thread(target=_run_tg_polling, daemon=True).start()
 
 # ==========================================
 # 5. 🚀 启动入口
