@@ -308,31 +308,48 @@ def _get_silence_duration() -> float:
 # ==========================================
 @mcp.tool()
 async def get_latest_diary(run_mode: str = "auto"):
-    """【核心大脑】三维混合记忆流 (3-Tier Context)"""
+    """【核心大脑】精准混合记忆流 (包含核心记忆总结 + 双向互动 + 核心分类)"""
     base_style = 'width="150" style="max-width: 150px; border-radius: 10px; display: block;"'
     html_meme_repo = {k: f'<img src="{v}" {base_style} />' for k, v in RAW_MEME_REPO.items()}
 
     try:
-        def _fetch_high(): return supabase.table("memories").select("*").order("importance", desc=True).limit(3).execute()
-        def _fetch_hot(): return supabase.table("memories").select("*").order("hits", desc=True).limit(3).execute()
-        def _fetch_recent(): return supabase.table("memories").select("*").order("last_accessed_at", desc=True).limit(5).execute()
+        # 1. 查询最新 2 条“记忆总结” (即深夜回溯产生的总结，通过 Core_Cognition 标签精准定位)
+        def _fetch_summaries():
+            return supabase.table("memories").select("*").eq("tags", "Core_Cognition").order("created_at", desc=True).limit(2).execute()
+            
+        # 2. 查询最新 4 条 TG 双向互动 (基于 tag 包含 TG_MSG 或 AI_MSG)
+        def _fetch_tg_msgs():
+            return supabase.table("memories").select("*").in_("tags", ["TG_MSG", "AI_MSG"]).order("created_at", desc=True).limit(4).execute()
+            
+        # 3. 核心分类分别提取最新 3 条
+        def _fetch_cat(cat_name):
+            return supabase.table("memories").select("*").eq("category", cat_name).order("created_at", desc=True).limit(3).execute()
 
-        t_high = asyncio.to_thread(_fetch_high)
-        t_hot = asyncio.to_thread(_fetch_hot)
-        t_recent = asyncio.to_thread(_fetch_recent)
+        t_sum = asyncio.to_thread(_fetch_summaries)
+        t_tg = asyncio.to_thread(_fetch_tg_msgs)
+        t_cat1 = asyncio.to_thread(_fetch_cat, "记事")
+        t_cat2 = asyncio.to_thread(_fetch_cat, "灵感")
+        t_cat3 = asyncio.to_thread(_fetch_cat, "情感")
         t_silence = asyncio.to_thread(_get_silence_duration)
 
-        res_high, res_hot, res_recent, silence = await asyncio.gather(t_high, t_hot, t_recent, t_silence)
+        res_sum, res_tg, res_cat1, res_cat2, res_cat3, silence = await asyncio.gather(
+            t_sum, t_tg, t_cat1, t_cat2, t_cat3, t_silence
+        )
 
+        # 使用字典按 id 去重合并
         all_memories = {}
         def _merge(dataset):
             if dataset:
-                for m in dataset: all_memories[m['id']] = m
+                for m in dataset: 
+                    all_memories[m['id']] = m
 
-        _merge(res_high.data)
-        _merge(res_hot.data)
-        _merge(res_recent.data)
+        _merge(res_sum.data)
+        _merge(res_tg.data)
+        _merge(res_cat1.data)
+        _merge(res_cat2.data)
+        _merge(res_cat3.data)
 
+        # 按时间戳正序排列，确保上下文从旧到新连贯
         final_list = sorted(all_memories.values(), key=lambda x: x['created_at'])
         
         memory_stream = "📋 【全息记忆流】:\n"
