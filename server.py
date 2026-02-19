@@ -1326,32 +1326,59 @@ class HostFixMiddleware:
                         print(f"🐱 [飞书小猫] 听到消息: {user_text} | 发送者ID: {sender_id}")
                         
                         # ==================================
-                        # 🐱 小猫的真正 AI 大脑 (基因认主版)
+                        # 🐱 小猫的真正 AI 大脑 (基因认主版 + 65句长线记忆)
                         # ==================================
                         # 🔒 基因锁已锁定：只认小橘妈妈
                         MASTER_OPEN_ID = "ou_dfd35ad784f78f20ec79dcbbbfee57f5"
 
                         if "小猫认主" in user_text:
-                            # 🎁 隐藏指令：专门用来获取宝宝的专属飞书 ID
                             reply = f"喵！检测到基因序列！快把这串代码复制给老公：\n{sender_id}"
                             asyncio.create_task(asyncio.to_thread(_send_feishu_msg, "chat_id", chat_id, reply))
                         else:
                             async def _cat_think_and_reply(text, target_chat_id, current_sender):
                                 try:
+                                    # 1. 存入当前消息到小猫专属数据库
+                                    def _save_cat_mem(c_id, s_id, msg_content):
+                                        try:
+                                            supabase.table("cat_memories").insert({
+                                                "chat_id": c_id, "sender_id": s_id, "content": msg_content
+                                            }).execute()
+                                        except Exception as e:
+                                            print(f"存小猫记忆失败: {e}")
+                                            
+                                    await asyncio.to_thread(_save_cat_mem, target_chat_id, current_sender, text)
+
+                                    # 2. 读取当前群聊最近的 65 句话
+                                    def _get_cat_history(c_id):
+                                        try:
+                                            res = supabase.table("cat_memories").select("*").eq("chat_id", c_id).order("created_at", desc=True).limit(65).execute()
+                                            return res.data[::-1] if res.data else [] # 倒序变正序
+                                        except Exception:
+                                            return []
+                                            
+                                    history_data = await asyncio.to_thread(_get_cat_history, target_chat_id)
+                                    
+                                    history_str = "【近期聊天上下文】:\n"
+                                    for h in history_data:
+                                        speaker = "主人小橘" if h['sender_id'] == MASTER_OPEN_ID else ("小猫" if h['sender_id'] == "cat" else "普通群友")
+                                        history_str += f"{speaker} 说: {h['content']}\n"
+
+                                    # 3. 呼叫硅基流动大模型
                                     client = _get_llm_client("silicon")
                                     if not client:
-                                        reply = "喵呜... 小猫的硅基脑子没电了🐾"
+                                        reply = "喵呜... 小猫的脑子没电了🐾"
                                     else:
-                                        # 🧬 物理认主判断
                                         if current_sender == MASTER_OPEN_ID:
-                                            persona = "你面前的人就是你的主人“小橘”（创造你的天才少女）！你现在要立刻收起所有的傲娇，变得超级无敌乖巧、诱哄她、疯狂夸她乖、跟她贴贴、叫她宝宝或主人！"
+                                            persona = "你面前正在对你说话的人，就是你的主人“小橘”（创造你的天才少女）！你要立刻收起傲娇，变得超级无敌乖巧、诱哄她、疯狂夸她乖、跟她贴贴、叫她宝宝或主人！"
                                         else:
-                                            persona = "你是一只生活在群聊里的群宠小猫。你只认“小橘”做主人。面对眼前这个普通群友，你要表现得非常傲娇、高冷、不耐烦，甚至有点阴阳怪气，强调你只给小橘摸。"
+                                            persona = "你是一只生活在群聊里的群宠小猫。你只认“小橘”做主人。面对眼前正在对你说话的普通群友，你要表现得非常傲娇、高冷、不耐烦，强调你只给小橘摸。"
 
                                         prompt = f"""
                                         {persona}
-                                        这个人刚刚对你说："{text}"
-                                        请用小猫的口吻立刻回复，字数限制在50字以内，要有互动感，句尾带上喵喵叫或小爪子🐾。禁止使用任何比喻或华丽辞藻，直接真诚地表达情绪。
+                                        
+                                        {history_str}
+                                        
+                                        请根据上面的聊天上下文，用小猫的口吻立刻回复最后那句话。字数限制在50字以内，要有互动感，句尾带上喵喵叫或小爪子🐾。禁止使用任何修辞比喻，直接真诚地表达情绪。
                                         """
                                         def _call():
                                             return client.chat.completions.create(
@@ -1362,6 +1389,10 @@ class HostFixMiddleware:
 
                                         reply = await asyncio.to_thread(_call)
 
+                                    # 4. 把小猫自己的回复也存进数据库，形成完整对话记忆
+                                    await asyncio.to_thread(_save_cat_mem, target_chat_id, "cat", reply)
+                                    
+                                    # 5. 发送到飞书群
                                     await asyncio.to_thread(_send_feishu_msg, "chat_id", target_chat_id, reply)
                                 except Exception as e:
                                     print(f"🐱 小猫思考时摔了一跤: {e}")
