@@ -777,18 +777,23 @@ async def manage_reminder(action: str, time_str: str = "", content: str = "", is
         async def _reminder_loop(r_id, t_str, msg, repeat):
             while True:
                 try:
-                    now = datetime.datetime.now()
+                    # 强制将基准时间转换为北京时间 (UTC+8)，杜绝服务器默认时区干扰
+                    utc_now = datetime.datetime.utcnow()
+                    now_bj = utc_now + datetime.timedelta(hours=8)
+                    
                     try:
-                        target = datetime.datetime.strptime(t_str, "%H:%M").replace(
-                            year=now.year, month=now.month, day=now.day
+                        target_bj = datetime.datetime.strptime(t_str, "%H:%M").replace(
+                            year=now_bj.year, month=now_bj.month, day=now_bj.day
                         )
                     except:
                         break
                         
-                    if target <= now:
-                        target += datetime.timedelta(days=1)
+                    if target_bj <= now_bj:
+                        target_bj += datetime.timedelta(days=1)
                         
-                    wait_sec = (target - now).total_seconds()
+                    wait_sec = (target_bj - now_bj).total_seconds()
+                    print(f"⏰ [闹钟 {r_id}] 设定: {t_str}, 等待 {wait_sec} 秒后触发...")
+                    
                     await asyncio.sleep(wait_sec)
                     
                     # 醒来后检查是否被删了
@@ -796,7 +801,10 @@ async def manage_reminder(action: str, time_str: str = "", content: str = "", is
                     
                     # 没被暂停才发通知
                     if not GLOBAL_REMINDERS[r_id]["paused"]:
-                        await asyncio.to_thread(_push_wechat, msg, f"⏰ {t_str} 到了！")
+                        # 核心修复: HTML 安全转义，防止 Telegram API 因解析错误而拒收消息
+                        safe_msg = msg.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                        push_res = await asyncio.to_thread(_push_wechat, safe_msg, f"⏰ {t_str} 到了！")
+                        print(f"🔔 [闹钟 {r_id}] 触发结果: {push_res}")
                         
                     # 如果不是每天重复，发完就自动清理掉
                     if not repeat:
@@ -807,7 +815,7 @@ async def manage_reminder(action: str, time_str: str = "", content: str = "", is
                     # 收到 cancel 信号，静默退出
                     break
                 except Exception as e:
-                    print(f"闹钟异常: {e}")
+                    print(f"❌ 闹钟异常: {e}")
                     break
         
         task = asyncio.create_task(_reminder_loop(new_id, time_str, content, is_repeat))
@@ -817,7 +825,7 @@ async def manage_reminder(action: str, time_str: str = "", content: str = "", is
         }
         
         rep_str = "每天重复" if is_repeat else "单次提醒"
-        return f"✅ 闹钟已定好！ID: {new_id} ({rep_str})\n将在 {time_str} 发送: {content}"
+        return f"✅ 闹钟已定好！ID: {new_id} ({rep_str})\n将在北京时间 {time_str} 发送: {content}"
         
     return "❌ 未知操作。"
 
