@@ -737,97 +737,50 @@ async def schedule_delayed_message(message: str, delay_minutes: int = 5):
 
 @mcp.tool()
 async def manage_reminder(action: str, time_str: str = "", content: str = "", is_repeat: bool = False, reminder_id: str = ""):
-    """【高级提醒管理】
+    """【高级提醒管理 (数据库持久版)】
     action: "add"(添加), "delete"(删除), "pause"(暂停), "resume"(恢复), "list"(查看列表)
-    添加时需提供 time_str(如"14:30"), content, is_repeat(是否每天重复)
-    删除/暂停/恢复时需提供 reminder_id
     """
-    global GLOBAL_REMINDERS
-    
-    if action == "list":
-        if not GLOBAL_REMINDERS: return "📭 当前没有设定的提醒。"
-        ans = "📋 【当前提醒列表】:\n"
-        for rid, r in GLOBAL_REMINDERS.items():
-            status = "⏸️ 暂停中" if r['paused'] else "▶️ 运行中"
-            rep = "🔁 每天重复" if r['repeat'] else "1️⃣ 单次提醒"
-            ans += f"- ID: {rid} | {r['time']} | {rep} | {status} | 内容: {r['content']}\n"
-        return ans
+    try:
+        if action == "list":
+            res = await asyncio.to_thread(lambda: supabase.table("reminders").select("*").execute())
+            if not res or not res.data: return "📭 数据库中当前没有设定的提醒。"
+            ans = "📋 【当前数据库提醒列表】:\n"
+            for r in res.data:
+                status = "⏸️ 暂停中" if r.get('is_paused') else "▶️ 运行中"
+                rep = "🔁 每天重复" if r.get('is_repeat') else "1️⃣ 单次提醒"
+                ans += f"- ID: {r['id']} | {r['time_str']} | {rep} | {status} | 内容: {r['content']}\n"
+            return ans
 
-    if action in ["delete", "pause", "resume"]:
-        if reminder_id not in GLOBAL_REMINDERS:
-            return f"❌ 找不到 ID 为 {reminder_id} 的提醒。"
-        
         if action == "delete":
-            GLOBAL_REMINDERS[reminder_id]["task"].cancel()
-            del GLOBAL_REMINDERS[reminder_id]
-            return f"✅ 提醒 {reminder_id} 已删除。"
-        elif action == "pause":
-            GLOBAL_REMINDERS[reminder_id]["paused"] = True
+            await asyncio.to_thread(lambda: supabase.table("reminders").delete().eq("id", reminder_id).execute())
+            return f"✅ 提醒 {reminder_id} 已从数据库彻底删除。"
+
+        if action == "pause":
+            await asyncio.to_thread(lambda: supabase.table("reminders").update({"is_paused": True}).eq("id", reminder_id).execute())
             return f"⏸️ 提醒 {reminder_id} 已暂停。"
-        elif action == "resume":
-            GLOBAL_REMINDERS[reminder_id]["paused"] = False
+
+        if action == "resume":
+            await asyncio.to_thread(lambda: supabase.table("reminders").update({"is_paused": False}).eq("id", reminder_id).execute())
             return f"▶️ 提醒 {reminder_id} 已恢复运行。"
 
-    if action == "add":
-        if not time_str or not content:
-            return "❌ 添加提醒需要时间和内容。"
+        if action == "add":
+            if not time_str or not content: return "❌ 添加提醒需要时间和内容。"
+            new_id = f"R{int(time.time())}"
+            data = {
+                "id": new_id,
+                "time_str": time_str,
+                "content": content,
+                "is_repeat": is_repeat,
+                "is_paused": False,
+                "last_fired": ""
+            }
+            await asyncio.to_thread(lambda: supabase.table("reminders").insert(data).execute())
+            rep_str = "每天重复" if is_repeat else "单次提醒"
+            return f"✅ 闹钟已定好！ID: {new_id} ({rep_str})\n将在北京时间 {time_str} 发送: {content}\n(已安全持久化至 Supabase 数据库)"
             
-        new_id = f"R{int(time.time())}"
-        
-        async def _reminder_loop(r_id, t_str, msg, repeat):
-            while True:
-                try:
-                    # 强制将基准时间转换为北京时间 (UTC+8)，杜绝服务器默认时区干扰
-                    utc_now = datetime.datetime.utcnow()
-                    now_bj = utc_now + datetime.timedelta(hours=8)
-                    
-                    try:
-                        target_bj = datetime.datetime.strptime(t_str, "%H:%M").replace(
-                            year=now_bj.year, month=now_bj.month, day=now_bj.day
-                        )
-                    except:
-                        break
-                        
-                    if target_bj <= now_bj:
-                        target_bj += datetime.timedelta(days=1)
-                        
-                    wait_sec = (target_bj - now_bj).total_seconds()
-                    print(f"⏰ [闹钟 {r_id}] 设定: {t_str}, 等待 {wait_sec} 秒后触发...")
-                    
-                    await asyncio.sleep(wait_sec)
-                    
-                    # 醒来后检查是否被删了
-                    if r_id not in GLOBAL_REMINDERS: break
-                    
-                    # 没被暂停才发通知
-                    if not GLOBAL_REMINDERS[r_id]["paused"]:
-                        # 核心修复: HTML 安全转义，防止 Telegram API 因解析错误而拒收消息
-                        safe_msg = msg.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                        push_res = await asyncio.to_thread(_push_wechat, safe_msg, f"⏰ {t_str} 到了！")
-                        print(f"🔔 [闹钟 {r_id}] 触发结果: {push_res}")
-                        
-                    # 如果不是每天重复，发完就自动清理掉
-                    if not repeat:
-                        if r_id in GLOBAL_REMINDERS:
-                            del GLOBAL_REMINDERS[r_id]
-                        break
-                except asyncio.CancelledError:
-                    # 收到 cancel 信号，静默退出
-                    break
-                except Exception as e:
-                    print(f"❌ 闹钟异常: {e}")
-                    break
-        
-        task = asyncio.create_task(_reminder_loop(new_id, time_str, content, is_repeat))
-        GLOBAL_REMINDERS[new_id] = {
-            "task": task, "time": time_str, "content": content, 
-            "repeat": is_repeat, "paused": False
-        }
-        
-        rep_str = "每天重复" if is_repeat else "单次提醒"
-        return f"✅ 闹钟已定好！ID: {new_id} ({rep_str})\n将在北京时间 {time_str} 发送: {content}"
-        
-    return "❌ 未知操作。"
+        return "❌ 未知操作。"
+    except Exception as e:
+        return f"❌ 数据库闹钟操作失败: {e}\n(请确保 Supabase 中已创建 reminders 表)"
 
 @mcp.tool()
 async def send_email_via_api(subject: str, content: str):
@@ -1248,13 +1201,58 @@ async def async_wechat_summarizer():
         except Exception as e:
             print(f"微信总结回路报错: {e}")
 
+async def async_reminder_worker():
+    """专门负责每分钟巡视数据库闹钟的神经回路"""
+    print("⏰ 闹钟巡视神经已上线，正在对接 Supabase...")
+    while True:
+        try:
+            # 严格对齐北京时间
+            utc_now = datetime.datetime.utcnow()
+            now_bj = utc_now + datetime.timedelta(hours=8)
+            current_hm = now_bj.strftime("%H:%M")
+            current_date = now_bj.strftime("%Y-%m-%d")
+            
+            # 从数据库捞出所有没被暂停的闹钟
+            res = await asyncio.to_thread(lambda: supabase.table("reminders").select("*").eq("is_paused", False).execute())
+            
+            if res and res.data:
+                for r in res.data:
+                    r_id = r.get("id")
+                    t_str = r.get("time_str")
+                    msg = r.get("content", "")
+                    repeat = r.get("is_repeat", False)
+                    last_fired = r.get("last_fired", "")
+                    
+                    # 核心判断：时间到了，且今天没响过
+                    if current_hm == t_str and last_fired != current_date:
+                        safe_msg = msg.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                        await asyncio.to_thread(_push_wechat, safe_msg, f"⏰ {t_str} 到了！")
+                        print(f"🔔 [数据库闹钟 {r_id}] 触发成功！")
+                        
+                        if repeat:
+                            # 如果是每天重复，给它打个当天的戳，防止这一分钟内重复响
+                            await asyncio.to_thread(lambda: supabase.table("reminders").update({"last_fired": current_date}).eq("id", r_id).execute())
+                        else:
+                            # 如果是单次闹钟，阅后即焚，干干净净
+                            await asyncio.to_thread(lambda: supabase.table("reminders").delete().eq("id", r_id).execute())
+        except Exception as e:
+            pass # 静默捕获网络或数据库波动，防止线程崩溃
+            
+        # 巧妙休眠：睡到下一分钟的第1秒准时醒来，避免空跑浪费性能
+        now = datetime.datetime.utcnow()
+        sleep_sec = 60 - now.second + 1
+        await asyncio.sleep(sleep_sec)
+
 def start_autonomous_life():
     def _run_heartbeat(): asyncio.run(async_autonomous_life())
     def _run_tg_polling(): asyncio.run(async_telegram_polling())
     def _run_wechat_sum(): asyncio.run(async_wechat_summarizer())
+    def _run_reminders(): asyncio.run(async_reminder_worker())
+    
     threading.Thread(target=_run_heartbeat, daemon=True).start()
     threading.Thread(target=_run_tg_polling, daemon=True).start()
     threading.Thread(target=_run_wechat_sum, daemon=True).start()
+    threading.Thread(target=_run_reminders, daemon=True).start() # 接入闹钟神经
 
 # ==========================================
 # 5. 🚀 启动入口
