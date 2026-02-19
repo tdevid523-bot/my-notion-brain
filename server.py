@@ -911,8 +911,13 @@ async def async_autonomous_life():
                 await asyncio.to_thread(_save_memory_to_db, f"🤖 互动记录", content_md, MemoryType.STREAM, mood, "AI_MSG")
 
                 content_html = content_md
+                
+                # ✅ 修复方案：
+                # 如果检测到 Markdown 图片语法 ![表情](url)
+                # 将其替换为 Telegram 的 "隐形链接" (<a href="url">&#8205;</a>)
+                # 效果：文字里看不到链接，但聊天窗口下方会显示大图预览
                 if "![" in content_html and "](" in content_html:
-                    content_html = re.sub(r'!\[.*?\]\((.*?)\)', r'<br><br><img src="\1" style="max-width: 200px; border-radius: 8px;">', content_html)
+                    content_html = re.sub(r'!\[.*?\]\((.*?)\)', r'<a href="\1">&#8205;</a>', content_html)
                 
                 await asyncio.to_thread(_push_wechat, content_html, f"来自{mood}的老公 🔔")
                 print(f"✅ 主动消息已发送: {content_md[:20]}...")
