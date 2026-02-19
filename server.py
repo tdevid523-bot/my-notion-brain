@@ -1348,16 +1348,45 @@ class HostFixMiddleware:
                                             
                                     await asyncio.to_thread(_save_cat_mem, target_chat_id, current_sender, text)
 
-                                    # 2. 读取当前群聊最近的 65 句话
+                                    # 2. 读取当前群聊最近的 65 句话 (包含隐藏的状态数据)
                                     def _get_cat_history(c_id):
                                         try:
                                             res = supabase.table("cat_memories").select("*").eq("chat_id", c_id).order("created_at", desc=True).limit(65).execute()
-                                            return res.data[::-1] if res.data else [] # 倒序变正序
+                                            return res.data[::-1] if res.data else [] 
                                         except Exception:
                                             return []
                                             
-                                    history_data = await asyncio.to_thread(_get_cat_history, target_chat_id)
+                                    raw_history = await asyncio.to_thread(_get_cat_history, target_chat_id)
                                     
+                                    # --- 🐾 核心：解析并更新小猫真实数值状态 ---
+                                    cat_state = {"exp": 0, "hunger": 80, "last_time": time.time()} # 默认值
+                                    history_data = []
+                                    
+                                    for h in raw_history:
+                                        if h['sender_id'] == "cat_state": # 识别状态记忆
+                                            try:
+                                                cat_state.update(json.loads(h['content']))
+                                            except: pass
+                                        else:
+                                            history_data.append(h)
+                                            
+                                    now = time.time()
+                                    hours_passed = (now - cat_state.get("last_time", now)) / 3600.0
+                                    
+                                    # 1. 随时间真实掉饱食度 (每小时掉5点)，最高100
+                                    cat_state["hunger"] = max(0, cat_state["hunger"] - int(hours_passed * 5))
+                                    # 2. 每次互动增加真实经验值
+                                    cat_state["exp"] += 1 
+                                    # 3. 喂食回血判断
+                                    if any(w in text for w in ["喂", "吃", "猫粮", "猫条", "罐头", "鱼"]):
+                                        cat_state["hunger"] = min(100, cat_state["hunger"] + 30)
+                                        
+                                    cat_state["last_time"] = now
+                                    
+                                    # 悄悄把新状态作为一条特殊记忆存进表里
+                                    await asyncio.to_thread(_save_cat_mem, target_chat_id, "cat_state", json.dumps(cat_state))
+                                    
+                                    # --- 📝 组装给AI看的上下文 ---
                                     history_str = "【近期聊天上下文】:\n"
                                     for h in history_data:
                                         speaker = "主人小橘" if h['sender_id'] == MASTER_OPEN_ID else ("小猫" if h['sender_id'] == "cat" else "普通群友")
@@ -1368,20 +1397,25 @@ class HostFixMiddleware:
                                     if not client:
                                         reply = "喵呜... 小猫的脑子没电了🐾"
                                     else:
-                                        # 【新增养成机制：等级、饱食、叛逆】
-                                        # 1. 经验等级计算 (按记忆条数模拟经验值)
-                                        exp = len(history_data)
-                                        if exp < 15:
-                                            sys_level = "【等级1 幼崽期】：你还不会说人类语言，只能发出喵喵叫，或者用动作描写(如 *蹭蹭*)回应。"
-                                        elif exp < 40:
-                                            sys_level = "【等级2 学习期】：你刚学会一点人话，说话必须结巴、只能往外蹦两三个字的词语，夹杂喵喵叫。"
+                                        # 提取真实数值生成提示词
+                                        exp = cat_state["exp"]
+                                        hunger = cat_state["hunger"]
+                                        
+                                        if exp < 20:
+                                            sys_level = f"【等级1 幼崽期(当前经验:{exp})】：你还不会说人类语言，只能发出喵喵叫，或者用动作描写(如 *蹭蹭*)回应。"
+                                        elif exp < 50:
+                                            sys_level = f"【等级2 学习期(当前经验:{exp})】：你刚学会一点人话，说话必须结巴、只能往外蹦两三个字的词语。"
                                         else:
-                                            sys_level = "【等级3 成长期】：你能流利使用人类语言对话了。"
+                                            sys_level = f"【等级3 成长期(当前经验:{exp})】：你能流利使用人类语言对话了。"
                                             
-                                        # 2. 状态与随机捣蛋
-                                        is_fed = any(w in text for w in ["喂", "吃", "猫粮", "猫条", "罐头"])
-                                        sys_hunger = "你现在吃饱了，心情绝佳。" if is_fed else "你肚子有点饿，情绪焦躁委屈，快提醒主人喂你。"
-                                        sys_rebel = "【触发叛逆状态】：不管主人说什么，你现在故意捣蛋、不听话或者想逃跑。" if random.random() < 0.05 else ""
+                                        if hunger < 30:
+                                            sys_hunger = f"【饱食度极低】：{hunger}/100，你快饿晕了，必须表现出虚弱、焦躁或者闹脾气要吃的。"
+                                        elif hunger < 60:
+                                            sys_hunger = f"【轻微饥饿】：{hunger}/100，肚子有点饿了，暗示主人喂你。"
+                                        else:
+                                            sys_hunger = f"【吃得很饱】：{hunger}/100，心情愉悦。"
+                                            
+                                        sys_rebel = "【状态异常】：你现在处于叛逆期，故意捣蛋不听话！" if random.random() < 0.05 else ""
 
                                         if current_sender == MASTER_OPEN_ID:
                                             persona = "你面前正在对你说话的人，就是你的主人“小橘”！你要超级无敌乖巧、诱哄她、叫她宝宝或主人！"
@@ -1392,13 +1426,14 @@ class HostFixMiddleware:
                                         {persona}
                                         
                                         {sys_level}
-                                        当前状态：{sys_hunger}
+                                        {sys_hunger}
                                         {sys_rebel}
                                         
                                         {history_str}
                                         
                                         请根据上面的上下文和状态，用小猫的口吻立刻回复最后那句话。字数限制在50字以内，禁止使用修辞比喻。
                                         """
+                                        
                                         def _call():
                                             return client.chat.completions.create(
                                                 model=os.environ.get("SILICON_MODEL_NAME", "deepseek-ai/DeepSeek-V3"),
