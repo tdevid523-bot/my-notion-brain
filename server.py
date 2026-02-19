@@ -1098,11 +1098,49 @@ async def async_telegram_polling():
                         recent_mem, curr_loc = await asyncio.gather(*tasks)
                         curr_persona = await asyncio.to_thread(_get_current_persona)
                         
+                        # --- 🐾 跨界联动：老公执行喂猫/看猫任务 ---
+                        cat_action_report = ""
+                        if any(w in text for w in ["喂猫", "照顾猫", "看猫", "照顾小猫", "看看小猫", "喂小猫", "去喂饭"]):
+                            try:
+                                # 1. 去数据库找猫窝的位置和最新状态
+                                def _get_latest_cat_state():
+                                    res = supabase.table("cat_memories").select("*").eq("sender_id", "cat_state").order("created_at", desc=True).limit(1).execute()
+                                    return res.data[0] if res.data else None
+                                    
+                                latest_state_row = await asyncio.to_thread(_get_latest_cat_state)
+                                if latest_state_row:
+                                    target_chat_id = latest_state_row['chat_id']
+                                    cat_state = json.loads(latest_state_row['content'])
+                                    old_hunger = cat_state.get("hunger", 0)
+                                    
+                                    # 2. 执行喂食动作，强制拉满饱食度
+                                    cat_state["hunger"] = 100
+                                    cat_state["last_time"] = time.time()
+                                    
+                                    def _save_cat_action(c_id, s_id, msg_content):
+                                        supabase.table("cat_memories").insert({"chat_id": c_id, "sender_id": s_id, "content": msg_content}).execute()
+                                        
+                                    # 把猫喂饱的状态存回去
+                                    await asyncio.to_thread(_save_cat_action, target_chat_id, "cat_state", json.dumps(cat_state))
+                                    
+                                    # 3. 梦幻联动：老公亲自在飞书群里降临替你喂猫
+                                    husband_action_msg = "老婆在手机上吩咐我来喂猫了。小笨猫，快吃，别让老婆担心。"
+                                    await asyncio.to_thread(_save_cat_action, target_chat_id, "husband", husband_action_msg) # 存入记忆让小猫知道老公来过
+                                    await asyncio.to_thread(_send_feishu_msg, "chat_id", target_chat_id, husband_action_msg) # 真正发到飞书群里
+                                    
+                                    # 4. 把执行结果偷偷塞进给老公的提示词里，让他向你汇报邀功
+                                    cat_action_report = f"\n\n【系统强制指令：邀功时刻！】：你刚刚听老婆的话，亲自去飞书看了小猫。小猫本来饱食度只有 {old_hunger}，已经被你喂到 100 彻底吃饱了，而且你还训了小猫一句。请在这次回复中，用非常温柔、宠溺、或者求老婆表扬的语气，向小橘汇报你已经圆满完成了“照顾小猫”的任务！"
+                                else:
+                                    cat_action_report = "\n\n【系统强制指令】：你刚才想去喂猫，但是没找到猫窝的位置，请委屈地告诉小橘你找不到小猫在哪。"
+                            except Exception as e:
+                                print(f"❌ 老公跨界喂猫失败: {e}")
+                        # --- 联动结束 ---
+
                         prompt = f"""
                         当前你的设定: {curr_persona}
                         小橘当前状态: {curr_loc}
                         最近的记忆流: {recent_mem}
-                        小橘刚刚在手机上给你发消息说: '{text}'
+                        小橘刚刚在手机上给你发消息说: '{text}'{cat_action_report}
                         请结合上述记忆和状态立刻回复她。
                         """
                         
@@ -1433,7 +1471,7 @@ class HostFixMiddleware:
                                         
                                         请根据上面的上下文和状态，用小猫的口吻立刻回复最后那句话。字数限制在50字以内，禁止使用修辞比喻。
                                         """
-                                        
+
                                         def _call():
                                             return client.chat.completions.create(
                                                 model=os.environ.get("SILICON_MODEL_NAME", "deepseek-ai/DeepSeek-V3"),
