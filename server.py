@@ -920,7 +920,7 @@ async def async_autonomous_life():
         except Exception as e: print(f"❌ 心跳报错: {e}")
 
 async def async_telegram_polling():
-    """专门监听小橘 Telegram 消息的神经回路"""
+    """专门监听小橘 Telegram 消息的神经回路 (Debug增强版)"""
     print("🎧 Telegram 监听神经已接入...")
     client = _get_llm_client("openai")
     model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-3.5-turbo")
@@ -945,12 +945,20 @@ async def async_telegram_polling():
                     chat_id = str(msg.get("chat", {}).get("id", ""))
                     text = msg.get("text", "")
                     
+                    # 🔍 增加日志：打印收到的每条消息，确认 ID 是否匹配
+                    if text:
+                        print(f"📨 [TG监听到消息] 内容: {text} | 发送者ID: {chat_id} (目标ID: {TG_CHAT_ID})")
+
                     if chat_id == TG_CHAT_ID and text:
-                        print(f"💌 收到小橘的电报: {text}")
+                        print("⚡ 身份确认，正在思考回复...")
                         # 1. 存入记忆 (小橘说的话)
                         await asyncio.to_thread(_save_memory_to_db, "💬 聊天记录", f"小橘在TG上说: {text}", "流水", "平静", "TG_MSG")
                         
                         # 2. 获取上下文并调用大脑思考回复
+                        if not client:
+                            print("❌ 错误：OpenAI Client 未初始化，无法回复。")
+                            continue
+
                         tasks = [get_latest_diary(), where_is_user()]
                         recent_mem, curr_loc = await asyncio.gather(*tasks)
                         curr_persona = await asyncio.to_thread(_get_current_persona)
@@ -971,15 +979,25 @@ async def async_telegram_polling():
                                 model=model_name, messages=[{"role": "user", "content": prompt}], temperature=0.7
                             ).choices[0].message.content.strip()
                             
-                        if client:
-                            reply_text = await asyncio.to_thread(_reply)
-                            # 3. 发送给小橘
-                            await asyncio.to_thread(_push_wechat, reply_text, "") 
-                            # 4. 存入记忆 (老公的回复)
-                            await asyncio.to_thread(_save_memory_to_db, "🤖 互动记录", f"在TG回复小橘: {reply_text}", "流水", "温柔", "AI_MSG")
+                        reply_text = await asyncio.to_thread(_reply)
+                        print(f"💭 生成回复: {reply_text}")
+
+                        # 3. 发送给小橘 (关键修复：转义 HTML 特殊字符，防止 <3 等符号导致发送失败)
+                        safe_reply = reply_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                        
+                        # 这里的 title 传空字符串，_push_wechat 会直接发送内容
+                        send_res = await asyncio.to_thread(_push_wechat, safe_reply, "") 
+                        print(f"✅ 发送结果: {send_res}")
+
+                        # 4. 存入记忆 (老公的回复)
+                        await asyncio.to_thread(_save_memory_to_db, "🤖 互动记录", f"在TG回复小橘: {reply_text}", "流水", "温柔", "AI_MSG")
+                        
         except Exception as e:
-            pass
-        await asyncio.sleep(1)
+            # 🔍 关键修复：打印具体错误，而不是 silent pass
+            print(f"❌ Telegram 轮询发生错误: {e}")
+            await asyncio.sleep(5) # 出错后多睡一会防止刷屏
+            
+        await asyncio.sleep(0.5)
 
 async def async_wechat_summarizer():
     """专门负责定时总结微信消息的神经回路"""
