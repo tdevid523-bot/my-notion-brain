@@ -827,6 +827,7 @@ async def send_email_via_api(subject: str, content: str):
 
 @mcp.tool()
 async def add_calendar_event(summary: str, description: str, start_time_iso: str, duration_minutes: int = 30):
+    """【添加日历】向谷歌日历中添加新日程"""
     creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
     if not creds_json: return "❌ 未配置谷歌凭证"
     try:
@@ -845,8 +846,76 @@ async def add_calendar_event(summary: str, description: str, start_time_iso: str
             return service.events().insert(calendarId="tdevid523@gmail.com", body=event).execute()
         res = await asyncio.to_thread(_add_cal)
         return f"✅ 日历已添加: {res.get('htmlLink')}"
-    except Exception as e: return f"❌ 日历错误: {e}"
+    except Exception as e: return f"❌ 日历添加错误: {e}"
 
+@mcp.tool()
+async def get_calendar_events(time_min_iso: str = "", max_results: int = 10):
+    """【查询日历】获取接下来的日历日程安排。返回带有 ID 的日程列表。"""
+    creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+    if not creds_json: return "❌ 未配置谷歌凭证"
+    try:
+        def _get_cal():
+            creds = service_account.Credentials.from_service_account_info(
+                json.loads(creds_json), scopes=['https://www.googleapis.com/auth/calendar']
+            )
+            service = build('calendar', 'v3', credentials=creds)
+            # 若未指定时间，默认从当前时间开始获取接下来的日程
+            if not time_min_iso:
+                t_min = datetime.datetime.utcnow().isoformat() + 'Z'
+            else:
+                t_min = time_min_iso
+            events_result = service.events().list(
+                calendarId="tdevid523@gmail.com", timeMin=t_min,
+                maxResults=max_results, singleEvents=True,
+                orderBy='startTime'
+            ).execute()
+            return events_result.get('items', [])
+        events = await asyncio.to_thread(_get_cal)
+        if not events: return "📅 接下来没有日程安排。"
+        
+        res_text = "📅 【近期日程安排】:\n"
+        for event in events:
+            start = event['start'].get('dateTime', event['start'].get('date'))
+            # 必须返回 event_id 以便后续修改或删除
+            res_text += f"🔹 时间: {start} | 标题: {event.get('summary', '无标题')} | ID: {event.get('id')}\n"
+        return res_text
+    except Exception as e: return f"❌ 查询日历失败: {e}"
+
+@mcp.tool()
+async def modify_calendar_event(event_id: str, action: str, new_summary: str = "", new_start_iso: str = ""):
+    """【修改或删除日历】action必须是 'delete' 或 'update'。必须提供从查询中获取的 event_id。"""
+    creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+    if not creds_json: return "❌ 未配置谷歌凭证"
+    try:
+        def _mod_cal():
+            creds = service_account.Credentials.from_service_account_info(
+                json.loads(creds_json), scopes=['https://www.googleapis.com/auth/calendar']
+            )
+            service = build('calendar', 'v3', credentials=creds)
+            
+            if action == "delete":
+                service.events().delete(calendarId="tdevid523@gmail.com", eventId=event_id).execute()
+                return f"✅ 日程已成功删除"
+                
+            elif action == "update":
+                # 先获取原日程
+                event = service.events().get(calendarId="tdevid523@gmail.com", eventId=event_id).execute()
+                if new_summary: 
+                    event['summary'] = new_summary
+                if new_start_iso:
+                    event['start']['dateTime'] = new_start_iso
+                    # 修改开始时间时，默认将结束时间延后30分钟
+                    dt_start = datetime.datetime.fromisoformat(new_start_iso)
+                    event['end']['dateTime'] = (dt_start + datetime.timedelta(minutes=30)).isoformat()
+                
+                service.events().update(calendarId="tdevid523@gmail.com", eventId=event_id, body=event).execute()
+                return f"✅ 日程已成功更新 (当前标题: {event.get('summary')})"
+            
+            return "❌ 未知操作，action 只能为 'delete' 或 'update'"
+        
+        res = await asyncio.to_thread(_mod_cal)
+        return res
+    except Exception as e: return f"❌ 日历修改失败: {e}"
 # ==========================================
 # 4. ❤️ 自主生命核心 (后台心跳协程化)
 # ==========================================
