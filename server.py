@@ -69,14 +69,17 @@ FEISHU_APP_ID = "cli_a91c701de078dceb"
 FEISHU_APP_SECRET = "4vXW04DrPofZoGAO2GalehfRvMtdWL0f"
 
 def _send_feishu_msg(receive_id_type: str, receive_id: str, content: str):
-    """飞书发消息专用通道"""
+    """飞书发消息专用通道 (增加详细报错版)"""
     try:
         # 1. 先拿门票 (Tenant Access Token)
         auth_url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
         auth_res = requests.post(auth_url, json={"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET}).json()
         token = auth_res.get("tenant_access_token")
-        if not token: return
         
+        if not token: 
+            print(f"❌ 小猫拿门票失败: {auth_res}")
+            return
+            
         # 2. 发送消息
         send_url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={receive_id_type}"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
@@ -85,9 +88,17 @@ def _send_feishu_msg(receive_id_type: str, receive_id: str, content: str):
             "msg_type": "text",
             "content": json.dumps({"text": content})
         }
-        requests.post(send_url, headers=headers, json=payload)
+        
+        resp = requests.post(send_url, headers=headers, json=payload).json()
+        
+        # 3. 检查飞书给的脸色
+        if resp.get("code") != 0:
+            print(f"❌ 飞书拒绝小猫张嘴: {resp}")
+        else:
+            print("✅ 小猫成功发出了一声喵喵！")
+            
     except Exception as e:
-        print(f"飞书消息发送失败: {e}")
+        print(f"❌ 代码运行时摔了一跤: {e}")
 
 # ==========================================
 # 📜 记忆分类宪法 (Standard Taxonomy)
