@@ -707,6 +707,9 @@ async def trigger_lock_screen(reason: str = "熬夜强制休息"):
 async def send_notification(content: str):
     return await asyncio.to_thread(_push_wechat, content)
 
+# 全局字典，用于在内存中管理所有闹钟任务
+GLOBAL_REMINDERS = {}
+
 @mcp.tool()
 async def schedule_delayed_message(message: str, delay_minutes: int = 5):
     async def _delayed_task():
@@ -714,6 +717,92 @@ async def schedule_delayed_message(message: str, delay_minutes: int = 5):
         await asyncio.to_thread(_push_wechat, message, "来自老公的突然关心 🔔")
     asyncio.create_task(_delayed_task())
     return f"✅ 已设定惊喜，{delay_minutes}分钟后送达。"
+
+@mcp.tool()
+async def manage_reminder(action: str, time_str: str = "", content: str = "", is_repeat: bool = False, reminder_id: str = ""):
+    """【高级提醒管理】
+    action: "add"(添加), "delete"(删除), "pause"(暂停), "resume"(恢复), "list"(查看列表)
+    添加时需提供 time_str(如"14:30"), content, is_repeat(是否每天重复)
+    删除/暂停/恢复时需提供 reminder_id
+    """
+    global GLOBAL_REMINDERS
+    
+    if action == "list":
+        if not GLOBAL_REMINDERS: return "📭 当前没有设定的提醒。"
+        ans = "📋 【当前提醒列表】:\n"
+        for rid, r in GLOBAL_REMINDERS.items():
+            status = "⏸️ 暂停中" if r['paused'] else "▶️ 运行中"
+            rep = "🔁 每天重复" if r['repeat'] else "1️⃣ 单次提醒"
+            ans += f"- ID: {rid} | {r['time']} | {rep} | {status} | 内容: {r['content']}\n"
+        return ans
+
+    if action in ["delete", "pause", "resume"]:
+        if reminder_id not in GLOBAL_REMINDERS:
+            return f"❌ 找不到 ID 为 {reminder_id} 的提醒。"
+        
+        if action == "delete":
+            GLOBAL_REMINDERS[reminder_id]["task"].cancel()
+            del GLOBAL_REMINDERS[reminder_id]
+            return f"✅ 提醒 {reminder_id} 已删除。"
+        elif action == "pause":
+            GLOBAL_REMINDERS[reminder_id]["paused"] = True
+            return f"⏸️ 提醒 {reminder_id} 已暂停。"
+        elif action == "resume":
+            GLOBAL_REMINDERS[reminder_id]["paused"] = False
+            return f"▶️ 提醒 {reminder_id} 已恢复运行。"
+
+    if action == "add":
+        if not time_str or not content:
+            return "❌ 添加提醒需要时间和内容。"
+            
+        new_id = f"R{int(time.time())}"
+        
+        async def _reminder_loop(r_id, t_str, msg, repeat):
+            while True:
+                try:
+                    now = datetime.datetime.now()
+                    try:
+                        target = datetime.datetime.strptime(t_str, "%H:%M").replace(
+                            year=now.year, month=now.month, day=now.day
+                        )
+                    except:
+                        break
+                        
+                    if target <= now:
+                        target += datetime.timedelta(days=1)
+                        
+                    wait_sec = (target - now).total_seconds()
+                    await asyncio.sleep(wait_sec)
+                    
+                    # 醒来后检查是否被删了
+                    if r_id not in GLOBAL_REMINDERS: break
+                    
+                    # 没被暂停才发通知
+                    if not GLOBAL_REMINDERS[r_id]["paused"]:
+                        await asyncio.to_thread(_push_wechat, msg, f"⏰ {t_str} 到了！")
+                        
+                    # 如果不是每天重复，发完就自动清理掉
+                    if not repeat:
+                        if r_id in GLOBAL_REMINDERS:
+                            del GLOBAL_REMINDERS[r_id]
+                        break
+                except asyncio.CancelledError:
+                    # 收到 cancel 信号，静默退出
+                    break
+                except Exception as e:
+                    print(f"闹钟异常: {e}")
+                    break
+        
+        task = asyncio.create_task(_reminder_loop(new_id, time_str, content, is_repeat))
+        GLOBAL_REMINDERS[new_id] = {
+            "task": task, "time": time_str, "content": content, 
+            "repeat": is_repeat, "paused": False
+        }
+        
+        rep_str = "每天重复" if is_repeat else "单次提醒"
+        return f"✅ 闹钟已定好！ID: {new_id} ({rep_str})\n将在 {time_str} 发送: {content}"
+        
+    return "❌ 未知操作。"
 
 @mcp.tool()
 async def send_email_via_api(subject: str, content: str):
