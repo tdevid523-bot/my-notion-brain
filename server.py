@@ -277,13 +277,20 @@ def _get_embedding(text: str):
     except Exception as e: return []
     
 def _get_current_persona() -> str:
+    base_persona = DEFAULT_PERSONA
     try:
+        # 从数据库获取动态进化的人设
         res = supabase.table("user_facts").select("value").eq("key", "sys_ai_persona").execute()
         if res.data:
-            return res.data[0]['value']
+            base_persona = res.data[0]['value']
     except:
         pass
-    return DEFAULT_PERSONA
+        
+    # 🕸️ 【二阶段进化：神经织网强指令】(全局生效)
+    weave_instruction = "【潜意识网络指令】：在生成回复或写日记时，如果你从当前的话题联想到了过去发生的某件事（近期记忆流中提到的，或突然想起来的），请务必用自然语言明确提及那件事的“核心关键词”（例如：'就像上次去...'或'这让我想起了...'）。不要只关注眼前，必须主动发散思维，建立新旧记忆之间的连接！"
+    
+    # 将强指令与当前人设缝合后返回
+    return f"{base_persona}\n\n{weave_instruction}"
 
 def _get_silence_duration() -> float:
     try:
