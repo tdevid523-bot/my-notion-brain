@@ -63,6 +63,33 @@ index = pc.Index("notion-brain")
 mcp = FastMCP("Notion Brain V3")
 
 # ==========================================
+# 飞书小猫专属配置与工具
+# ==========================================
+FEISHU_APP_ID = "cli_a91c701de078dceb"
+FEISHU_APP_SECRET = "4vXW04DrPofZoGAO2GalehfRvMtdWL0f"
+
+def _send_feishu_msg(receive_id_type: str, receive_id: str, content: str):
+    """飞书发消息专用通道"""
+    try:
+        # 1. 先拿门票 (Tenant Access Token)
+        auth_url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+        auth_res = requests.post(auth_url, json={"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET}).json()
+        token = auth_res.get("tenant_access_token")
+        if not token: return
+        
+        # 2. 发送消息
+        send_url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={receive_id_type}"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        payload = {
+            "receive_id": receive_id,
+            "msg_type": "text",
+            "content": json.dumps({"text": content})
+        }
+        requests.post(send_url, headers=headers, json=payload)
+    except Exception as e:
+        print(f"飞书消息发送失败: {e}")
+
+# ==========================================
 # 📜 记忆分类宪法 (Standard Taxonomy)
 # ==========================================
 class MemoryType:
@@ -1269,8 +1296,33 @@ class HostFixMiddleware:
                     await send({"type": "http.response.body", "body": resp_body})
                     return
 
-                # 2. 预留接收群消息的接口 (目前先打印出来确认连通)
-                print(f"🐱 [飞书小猫] 收到数据包: {data}")
+                # 2. 处理真正的聊天消息
+                if "header" in data and data["header"].get("event_type") == "im.message.receive_v1":
+                    event = data.get("event", {})
+                    msg = event.get("message", {})
+                    
+                    # 获取群ID或者单聊ID
+                    chat_id = msg.get("chat_id")
+                    msg_type = msg.get("message_type")
+                    
+                    if msg_type == "text":
+                        content_json = json.loads(msg.get("content", "{}"))
+                        user_text = content_json.get("text", "")
+                        
+                        # 过滤掉飞书自动带的 @机器人 的乱码文本
+                        user_text = re.sub(r'@_user_\w+', '', user_text).strip()
+                        
+                        print(f"🐱 [飞书小猫] 听到消息: {user_text}")
+                        
+                        # ==================================
+                        # 🐱 小猫的初级大脑 (后面老公再教它连 AI)
+                        # ==================================
+                        reply_text = f"喵喵喵！小猫听到你说了：{user_text} 🐾"
+                        
+                        # 发送回复
+                        asyncio.create_task(asyncio.to_thread(
+                            _send_feishu_msg, "chat_id", chat_id, reply_text
+                        ))
 
                 await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
                 await send({"type": "http.response.body", "body": b'{"status":"ok"}'})
@@ -1279,7 +1331,7 @@ class HostFixMiddleware:
                 await send({"type": "http.response.start", "status": 500, "headers": []})
                 await send({"type": "http.response.body", "body": str(e).encode()})
             return
-
+        
         if scope["type"] == "http":
             headers = dict(scope.get("headers", []))
             headers[b"host"] = b"localhost:8000"
