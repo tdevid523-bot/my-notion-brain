@@ -1160,6 +1160,9 @@ async def async_wechat_summarizer():
                 # 发送到 Telegram 给小橘
                 await asyncio.to_thread(_push_wechat, summary, "📱 手机消息总结")
                 
+                # ✅ 核心修复：把AI自己发出的总结存入记忆库，打上 AI_MSG 标签，确保有上下文
+                await asyncio.to_thread(_save_memory_to_db, "📱 手机消息总结", f"给小橘发了消息总结: {summary}", "流水", "温柔", "AI_MSG")
+                
                 # 标记为已处理，防止下次重复总结
                 def _mark_done():
                     for item in res.data:
