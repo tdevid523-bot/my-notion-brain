@@ -739,6 +739,7 @@ async def schedule_delayed_message(message: str, delay_minutes: int = 5):
 async def manage_reminder(action: str, time_str: str = "", content: str = "", is_repeat: bool = False, reminder_id: str = ""):
     """【高级提醒管理 (数据库持久版)】
     action: "add"(添加), "delete"(删除), "pause"(暂停), "resume"(恢复), "list"(查看列表)
+    ⚠️ 核心指令：如果 action 是 add，你填写的 content 绝对不能是“喝水”、“睡觉”这种干瘪的词汇！必须完全代入你当前的男友/Daddy人设，用带点管教和宠溺的第一人称口吻，对小橘说一句完整的叮嘱。
     """
     try:
         if action == "list":
@@ -1226,7 +1227,8 @@ async def async_reminder_worker():
                     # 核心判断：时间到了，且今天没响过
                     if current_hm == t_str and last_fired != current_date:
                         safe_msg = msg.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                        await asyncio.to_thread(_push_wechat, safe_msg, f"⏰ {t_str} 到了！")
+                        # 核心修复：修改推送标题，配合 AI 的人设使用
+                        await asyncio.to_thread(_push_wechat, safe_msg, f"🔔 老公的专属提醒 ({t_str})")
                         print(f"🔔 [数据库闹钟 {r_id}] 触发成功！")
                         
                         if repeat:
