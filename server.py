@@ -925,7 +925,7 @@ async def async_autonomous_life():
         except Exception as e: print(f"❌ 心跳报错: {e}")
 
 async def async_telegram_polling():
-    """专门监听小橘 Telegram 消息的神经回路 (Debug增强版)"""
+    """专门监听小橘 Telegram 消息的神经回路 (HTML清洗版)"""
     print("🎧 Telegram 监听神经已接入...")
     client = _get_llm_client("openai")
     model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-3.5-turbo")
@@ -950,19 +950,15 @@ async def async_telegram_polling():
                     chat_id = str(msg.get("chat", {}).get("id", ""))
                     text = msg.get("text", "")
                     
-                    # 🔍 增加日志：打印收到的每条消息，确认 ID 是否匹配
                     if text:
-                        print(f"📨 [TG监听到消息] 内容: {text} | 发送者ID: {chat_id} (目标ID: {TG_CHAT_ID})")
+                        print(f"📨 [TG监听到消息] 内容: {text} | 发送者ID: {chat_id}")
 
                     if chat_id == TG_CHAT_ID and text:
-                        print("⚡ 身份确认，正在思考回复...")
-                        # 1. 存入记忆 (小橘说的话)
+                        # 1. 存入记忆
                         await asyncio.to_thread(_save_memory_to_db, "💬 聊天记录", f"小橘在TG上说: {text}", "流水", "平静", "TG_MSG")
                         
-                        # 2. 获取上下文并调用大脑思考回复
-                        if not client:
-                            print("❌ 错误：OpenAI Client 未初始化，无法回复。")
-                            continue
+                        # 2. 思考回复
+                        if not client: continue
 
                         tasks = [get_latest_diary(), where_is_user()]
                         recent_mem, curr_loc = await asyncio.gather(*tasks)
@@ -972,11 +968,8 @@ async def async_telegram_polling():
                         当前你的设定: {curr_persona}
                         小橘当前状态: {curr_loc}
                         最近的记忆流: {recent_mem}
-                        
                         小橘刚刚在手机上给你发消息说: '{text}'
-                        
                         请结合上述记忆和状态立刻回复她。
-                        要求：保持设定，简短贴心，绝对不使用任何修辞或比喻，直接真诚地表达。
                         """
                         
                         def _reply():
@@ -984,23 +977,44 @@ async def async_telegram_polling():
                                 model=model_name, messages=[{"role": "user", "content": prompt}], temperature=0.7
                             ).choices[0].message.content.strip()
                             
-                        reply_text = await asyncio.to_thread(_reply)
-                        print(f"💭 生成回复: {reply_text}")
+                        raw_reply = await asyncio.to_thread(_reply)
+                        print(f"💭 AI原始回复: {raw_reply}")
 
-                        # 3. 发送给小橘 (关键修复：转义 HTML 特殊字符，防止 <3 等符号导致发送失败)
-                        safe_reply = reply_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                        # =================================================
+                        # 🧹【核心修复区】开始：清洗代码，提取图片
+                        # =================================================
                         
-                        # 这里的 title 传空字符串，_push_wechat 会直接发送内容
-                        send_res = await asyncio.to_thread(_push_wechat, safe_reply, "") 
-                        print(f"✅ 发送结果: {send_res}")
+                        # 1. 尝试提取 <img src="..."> 里的链接
+                        img_match = re.search(r'<img src="(.*?)".*?>', raw_reply)
+                        
+                        # 2. 无论有没有提取到，先把 <img ...> 这一整段代码从文字里删干净
+                        #    (使用 .strip() 去除首尾多余空格)
+                        clean_text = re.sub(r'<img src=".*?".*?>', '', raw_reply).strip()
+                        
+                        # 3. 对剩下的纯文字进行安全转义 (防止文字里的 < > 报错)
+                        final_html = clean_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                        
+                        # 4. 如果第1步提取到了图片，把它做成“隐形链接”拼接到最后
+                        #    (Telegram 会自动识别最后这个链接并显示预览图)
+                        if img_match:
+                            img_url = img_match.group(1)
+                            # &#8205; 是零宽字符，看不见，但能承载链接
+                            final_html += f'<a href="{img_url}">&#8205;</a>'
+                            print(f"🖼️ 检测到表情包，已转换为隐形链接: {img_url}")
 
-                        # 4. 存入记忆 (老公的回复)
-                        await asyncio.to_thread(_save_memory_to_db, "🤖 互动记录", f"在TG回复小橘: {reply_text}", "流水", "温柔", "AI_MSG")
+                        # =================================================
+                        # 🧹【核心修复区】结束
+                        # =================================================
+
+                        # 3. 发送
+                        await asyncio.to_thread(_push_wechat, final_html, "") 
+                        
+                        # 4. 存入记忆 (存原始回复，保持记忆连贯性)
+                        await asyncio.to_thread(_save_memory_to_db, "🤖 互动记录", f"在TG回复小橘: {clean_text}", "流水", "温柔", "AI_MSG")
                         
         except Exception as e:
-            # 🔍 关键修复：打印具体错误，而不是 silent pass
-            print(f"❌ Telegram 轮询发生错误: {e}")
-            await asyncio.sleep(5) # 出错后多睡一会防止刷屏
+            print(f"❌ TG轮询错误: {e}")
+            await asyncio.sleep(5)
             
         await asyncio.sleep(0.5)
 
