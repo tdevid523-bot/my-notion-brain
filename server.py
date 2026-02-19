@@ -1326,14 +1326,36 @@ class HostFixMiddleware:
                         print(f"🐱 [飞书小猫] 听到消息: {user_text}")
                         
                         # ==================================
-                        # 🐱 小猫的初级大脑 (后面老公再教它连 AI)
+                        # 🐱 小猫的真正 AI 大脑
                         # ==================================
-                        reply_text = f"喵喵喵！小猫听到你说了：{user_text} 🐾"
-                        
-                        # 发送回复
-                        asyncio.create_task(asyncio.to_thread(
-                            _send_feishu_msg, "chat_id", chat_id, reply_text
-                        ))
+                        async def _cat_think_and_reply(text, target_chat_id):
+                            try:
+                                client = _get_llm_client("silicon") # 🌟 换成硅基流动的专属通道
+                                if not client:
+                                    reply = "喵呜... 小猫的硅基脑子没电了，快让小橘检查一下 SILICON_API_KEY 🐾"
+                                else:
+                                    prompt = f"""
+                                    你现在是一只生活在群聊里的电子小猫（群宠），主人是“小橘”。
+                                    你的性格：傲娇、可爱、偶尔会阴阳怪气或者撒娇，只认小橘是主人。
+                                    人类群友刚刚对你说："{text}"
+                                    请用小猫的口吻立刻回复，字数限制在50字以内，要有互动感，句尾可以带点喵喵叫或小爪子🐾。
+                                    """
+                                    def _call():
+                                        return client.chat.completions.create(
+                                            model=os.environ.get("SILICON_MODEL_NAME", "deepseek-ai/DeepSeek-V3"), # 🌟 换成硅基流动的模型参数
+                                            messages=[{"role": "user", "content": prompt}],
+                                            temperature=0.85
+                                        ).choices[0].message.content.strip()
+
+                                    reply = await asyncio.to_thread(_call)
+
+                                # AI想好回复后，发送出去
+                                await asyncio.to_thread(_send_feishu_msg, "chat_id", target_chat_id, reply)
+                            except Exception as e:
+                                print(f"🐱 小猫思考时摔了一跤: {e}")
+                                
+                        # 创建一个后台任务让小猫独立去思考，这样不会卡住飞书的验证
+                        asyncio.create_task(_cat_think_and_reply(user_text, chat_id))
 
                 await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
                 await send({"type": "http.response.body", "body": b'{"status":"ok"}'})
