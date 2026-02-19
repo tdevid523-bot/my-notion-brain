@@ -1249,6 +1249,37 @@ class HostFixMiddleware:
                 await send({"type": "http.response.body", "body": str(e).encode()})
             return
 
+        # ==========================================
+        # 接收 飞书 (Feishu) 的机器人消息与验证
+        # ==========================================
+        if scope["type"] == "http" and scope["path"] == "/api/feishu" and scope["method"] == "POST":
+            try:
+                body = b""
+                while True:
+                    msg = await receive()
+                    body += msg.get("body", b"")
+                    if not msg.get("more_body", False): break
+                
+                data = json.loads(body.decode("utf-8"))
+                
+                # 1. 处理飞书的 Challenge 验证暗号
+                if "challenge" in data and data.get("type") == "url_verification":
+                    resp_body = json.dumps({"challenge": data["challenge"]}).encode("utf-8")
+                    await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
+                    await send({"type": "http.response.body", "body": resp_body})
+                    return
+
+                # 2. 预留接收群消息的接口 (目前先打印出来确认连通)
+                print(f"🐱 [飞书小猫] 收到数据包: {data}")
+
+                await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
+                await send({"type": "http.response.body", "body": b'{"status":"ok"}'})
+            except Exception as e:
+                print(f"Feishu API Error: {e}")
+                await send({"type": "http.response.start", "status": 500, "headers": []})
+                await send({"type": "http.response.body", "body": str(e).encode()})
+            return
+
         if scope["type"] == "http":
             headers = dict(scope.get("headers", []))
             headers[b"host"] = b"localhost:8000"
