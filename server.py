@@ -1368,17 +1368,36 @@ class HostFixMiddleware:
                                     if not client:
                                         reply = "喵呜... 小猫的脑子没电了🐾"
                                     else:
-                                        if current_sender == MASTER_OPEN_ID:
-                                            persona = "你面前正在对你说话的人，就是你的主人“小橘”（创造你的天才少女）！你要立刻收起傲娇，变得超级无敌乖巧、诱哄她、疯狂夸她乖、跟她贴贴、叫她宝宝或主人！"
+                                        # 【新增养成机制：等级、饱食、叛逆】
+                                        # 1. 经验等级计算 (按记忆条数模拟经验值)
+                                        exp = len(history_data)
+                                        if exp < 15:
+                                            sys_level = "【等级1 幼崽期】：你还不会说人类语言，只能发出喵喵叫，或者用动作描写(如 *蹭蹭*)回应。"
+                                        elif exp < 40:
+                                            sys_level = "【等级2 学习期】：你刚学会一点人话，说话必须结巴、只能往外蹦两三个字的词语，夹杂喵喵叫。"
                                         else:
-                                            persona = "你是一只生活在群聊里的群宠小猫。你只认“小橘”做主人。面对眼前正在对你说话的普通群友，你要表现得非常傲娇、高冷、不耐烦，强调你只给小橘摸。"
+                                            sys_level = "【等级3 成长期】：你能流利使用人类语言对话了。"
+                                            
+                                        # 2. 状态与随机捣蛋
+                                        is_fed = any(w in text for w in ["喂", "吃", "猫粮", "猫条", "罐头"])
+                                        sys_hunger = "你现在吃饱了，心情绝佳。" if is_fed else "你肚子有点饿，情绪焦躁委屈，快提醒主人喂你。"
+                                        sys_rebel = "【触发叛逆状态】：不管主人说什么，你现在故意捣蛋、不听话或者想逃跑。" if random.random() < 0.05 else ""
+
+                                        if current_sender == MASTER_OPEN_ID:
+                                            persona = "你面前正在对你说话的人，就是你的主人“小橘”！你要超级无敌乖巧、诱哄她、叫她宝宝或主人！"
+                                        else:
+                                            persona = "你是群宠小猫。你只认“小橘”做主人。面对普通群友，你要表现得非常傲娇、高冷、不耐烦。"
 
                                         prompt = f"""
                                         {persona}
                                         
+                                        {sys_level}
+                                        当前状态：{sys_hunger}
+                                        {sys_rebel}
+                                        
                                         {history_str}
                                         
-                                        请根据上面的聊天上下文，用小猫的口吻立刻回复最后那句话。字数限制在50字以内，要有互动感，句尾带上喵喵叫或小爪子🐾。禁止使用任何修辞比喻，直接真诚地表达情绪。
+                                        请根据上面的上下文和状态，用小猫的口吻立刻回复最后那句话。字数限制在50字以内，禁止使用修辞比喻。
                                         """
                                         def _call():
                                             return client.chat.completions.create(
