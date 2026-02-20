@@ -1236,12 +1236,19 @@ async def async_telegram_polling():
                         # 🧹【核心修复区】开始：清洗代码，提取图片
                         # =================================================
                         
-                        img_match = re.search(r'<img src="(.*?)".*?>', raw_reply)
-                        clean_text = re.sub(r'<img src=".*?".*?>', '', raw_reply).strip()
+                        html_img_match = re.search(r'<img src="(.*?)".*?>', raw_reply)
+                        md_img_match = re.search(r'!\[.*?\]\((.*?)\)', raw_reply)
+                        
+                        clean_text = re.sub(r'<img src=".*?".*?>', '', raw_reply)
+                        clean_text = re.sub(r'!\[.*?\]\(.*?\)', '', clean_text).strip()
+                        
                         final_html = clean_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                         
-                        if img_match:
-                            img_url = img_match.group(1)
+                        if html_img_match:
+                            img_url = html_img_match.group(1)
+                            final_html += f'<a href="{img_url}">&#8205;</a>'
+                        elif md_img_match:
+                            img_url = md_img_match.group(1)
                             final_html += f'<a href="{img_url}">&#8205;</a>'
 
                         # 3. 发送
