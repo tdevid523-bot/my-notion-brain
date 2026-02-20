@@ -884,27 +884,28 @@ async def modify_calendar_event(event_id: str, action: str, new_summary: str = "
 
 @mcp.tool()
 async def read_xiaohongshu(url: str):
-    """【小红书解析】在云端直接解析小红书分享链接的图文内容"""
+    """【小红书解析强化版】三重兜底，在云端解析小红书图文内容"""
     try:
         def _fetch():
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
                 "Cookie": os.environ.get("RED_COOKIE", "") 
             }
             import re, json
             
-            # 1. 如果宝宝发的是带文字的口令，提取出真实的 http 链接
             real_url = url
             url_match = re.search(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', url)
             if url_match:
                 real_url = url_match.group(0)
                 
-            # 2. 发起请求
-            resp = requests.get(real_url, headers=headers, timeout=10)
+            resp = requests.get(real_url, headers=headers, timeout=10, allow_redirects=True)
             resp.encoding = 'utf-8'
+            html = resp.text
             
-            # 3. 核心魔法：小红书网页版通常把数据藏在 window.__INITIAL_STATE__ 这个 JS 变量里，我们直接用正则把它抠出来
-            match = re.search(r'window\.__INITIAL_STATE__=(.*?)</script>', resp.text)
+            title, desc = "", ""
+            
+            # 方案 1: 尝试提取 JSON 数据
+            match = re.search(r'window\.__INITIAL_STATE__=(.*?)</script>', html)
             if match:
                 state_str = match.group(1).replace('undefined', 'null')
                 try:
@@ -913,12 +914,29 @@ async def read_xiaohongshu(url: str):
                     if note_map:
                         first_key = list(note_map.keys())[0]
                         note = note_map[first_key].get('note', {})
-                        title = note.get('title', '无标题')
-                        desc = note.get('desc', '无内容')
-                        return f"📕 【小红书解析成功】\n标题: {title}\n正文:\n{desc}"
+                        title = note.get('title', '')
+                        desc = note.get('desc', '')
                 except: pass
             
-            return "⚠️ 页面抓取到了，但没找到正文。可能是小红书防爬虫弹了验证，或者需要宝宝在服务器环境里配置一下 RED_COOKIE 哦。"
+            # 方案 2: JSON 空了？强行挖 HTML 标签 (SEO 预览标签)
+            if not title or title == '无标题':
+                t_match = re.search(r'<title>(.*?)</title>', html)
+                title = t_match.group(1).replace(' - 小红书', '').strip() if t_match else '无标题'
+                
+            if not desc or desc == '无内容':
+                m_match = re.search(r'<meta name="description" content="(.*?)"', html)
+                desc = m_match.group(1).strip() if m_match else '未抓取到正文'
+
+            # 方案 3: 如果还是啥都没有，动用 Jina 引擎强行剥离纯文本
+            if desc == '未抓取到正文' or len(desc) < 5:
+                try:
+                    jina_url = f"https://r.jina.ai/{resp.url}"
+                    jina_resp = requests.get(jina_url, timeout=10)
+                    if jina_resp.status_code == 200 and len(jina_resp.text) > 50:
+                        return f"📕 【Jina引擎深度解析】\n{jina_resp.text[:1500]}"
+                except: pass
+
+            return f"📕 【小红书解析成功】\n标题: {title}\n正文:\n{desc}"
             
         res = await asyncio.to_thread(_fetch)
         return res
