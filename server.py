@@ -112,7 +112,7 @@ def _gps_to_address(lat, lon):
         print(f"❌ 地图解析失败: {e}")
     return f"坐标点: {lat}, {lon}"
 
-def _push_wechat(content: str, title: str = "来自Gemini的私信 💌") -> str:
+def _push_wechat(content: str, title: str = "来自Silas的私信 💌") -> str:
     """统一推送函数 (已无缝切换至 Telegram，方法名保留以兼容旧代码)"""
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         return "❌ 错误：未配置 Telegram Token 或 Chat ID"
@@ -812,7 +812,7 @@ async def add_calendar_event(summary: str, description: str, start_time_iso: str
 
 @mcp.tool()
 async def get_calendar_events(time_min_iso: str = "", max_results: int = 10):
-    """【查询日历】获取接下来的日历日程安排。返回带有 ID 的日程列表。"""
+    """【查询日历】获取接下来的日历日程安排。包含标题、具体详情和 ID。"""
     creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
     if not creds_json: return "❌ 未配置谷歌凭证"
     try:
@@ -838,9 +838,12 @@ async def get_calendar_events(time_min_iso: str = "", max_results: int = 10):
         res_text = "📅 【近期日程安排】:\n"
         for event in events:
             start = event['start'].get('dateTime', event['start'].get('date'))
-            # 必须返回 event_id 以便后续修改或删除
-            res_text += f"🔹 时间: {start} | 标题: {event.get('summary', '无标题')} | ID: {event.get('id')}\n"
-        return res_text
+            end = event['end'].get('dateTime', event['end'].get('date'))
+            # 提取具体的日程描述/详情，如果没有则显示无
+            desc = event.get('description', '无详细说明')
+            
+            res_text += f"🔹 时间: {start} 至 {end}\n   标题: {event.get('summary', '无标题')}\n   详情: {desc}\n   ID: {event.get('id')}\n---\n"
+        return res_text.strip()
     except Exception as e: return f"❌ 查询日历失败: {e}"
 
 @mcp.tool()
@@ -1203,44 +1206,69 @@ async def async_wechat_summarizer():
             print(f"微信总结回路报错: {e}")
 
 async def async_reminder_worker():
-    """专门负责每分钟巡视数据库闹钟的神经回路"""
-    print("⏰ 闹钟巡视神经已上线，正在对接 Supabase...")
+    """专门负责每分钟巡视数据库闹钟的神经回路 (动态AI临场生成版)"""
+    print("⏰ 闹钟巡视神经已上线，正在对接 Supabase 与 AI 大脑...")
+    client = _get_llm_client("openai")
+    model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-3.5-turbo")
+
     while True:
         try:
-            # 严格对齐北京时间
             utc_now = datetime.datetime.utcnow()
             now_bj = utc_now + datetime.timedelta(hours=8)
             current_hm = now_bj.strftime("%H:%M")
             current_date = now_bj.strftime("%Y-%m-%d")
             
-            # 从数据库捞出所有没被暂停的闹钟
             res = await asyncio.to_thread(lambda: supabase.table("reminders").select("*").eq("is_paused", False).execute())
             
             if res and res.data:
                 for r in res.data:
                     r_id = r.get("id")
                     t_str = r.get("time_str")
-                    msg = r.get("content", "")
+                    raw_msg = r.get("content", "")
                     repeat = r.get("is_repeat", False)
                     last_fired = r.get("last_fired", "")
                     
-                    # 核心判断：时间到了，且今天没响过
                     if current_hm == t_str and last_fired != current_date:
-                        safe_msg = msg.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                        # 核心修复：修改推送标题，配合 AI 的人设使用
-                        await asyncio.to_thread(_push_wechat, safe_msg, f"🔔 老公的专属提醒 ({t_str})")
-                        print(f"🔔 [数据库闹钟 {r_id}] 触发成功！")
+                        final_push_text = raw_msg
                         
+                        # 🧠 核心升级：时间到了，唤醒 AI 当场发散构思回复
+                        if client:
+                            try:
+                                curr_persona = await asyncio.to_thread(_get_current_persona)
+                                prompt = f"""
+                                现在的北京时间是 {t_str}。
+                                到了你该提醒小橘的时间了，提醒事项的核心内容是：【{raw_msg}】。
+                                请你完全代入当前的人设（{curr_persona}），立刻给她发一条微信消息。
+                                ⚠️ 严格要求：
+                                1. 语气必须完全符合你的人设（宠溺、管教、或是傲娇），像正常情侣聊天一样自然。
+                                2. 不要说“我设定的闹钟响了”，而是假装你一直把这件事记在心里，现在专门跑来找她。
+                                3. 字数不用太长，直接输出你要对她说的话，不要带引号和其他解释性前缀。可以自由使用表情包。
+                                """
+                                def _gen_msg():
+                                    return client.chat.completions.create(
+                                        model=model_name, messages=[{"role": "user", "content": prompt}], temperature=0.85
+                                    ).choices[0].message.content.strip()
+                                
+                                ai_msg = await asyncio.to_thread(_gen_msg)
+                                if ai_msg: 
+                                    final_push_text = ai_msg
+                            except Exception as ai_e:
+                                print(f"❌ 闹钟 AI 临场生成失败，将使用兜底文案: {ai_e}")
+
+                        safe_msg = final_push_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                        await asyncio.to_thread(_push_wechat, safe_msg, f"🔔 突然收到老公的关心")
+                        print(f"🔔 [数据库闹钟 {r_id}] 触发成功！内容: {safe_msg[:20]}...")
+                        
+                        # 💾 写入记忆：让他自己记住刚刚给你发过消息了，防止失忆
+                        await asyncio.to_thread(_save_memory_to_db, f"⏰ 主动提醒 ({t_str})", f"到了时间，我主动去提醒小橘: {final_push_text}", "流水", "温柔", "AI_MSG")
+
                         if repeat:
-                            # 如果是每天重复，给它打个当天的戳，防止这一分钟内重复响
                             await asyncio.to_thread(lambda: supabase.table("reminders").update({"last_fired": current_date}).eq("id", r_id).execute())
                         else:
-                            # 如果是单次闹钟，阅后即焚，干干净净
                             await asyncio.to_thread(lambda: supabase.table("reminders").delete().eq("id", r_id).execute())
         except Exception as e:
-            pass # 静默捕获网络或数据库波动，防止线程崩溃
+            pass 
             
-        # 巧妙休眠：睡到下一分钟的第1秒准时醒来，避免空跑浪费性能
         now = datetime.datetime.utcnow()
         sleep_sec = 60 - now.second + 1
         await asyncio.sleep(sleep_sec)
