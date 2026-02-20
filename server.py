@@ -1237,10 +1237,10 @@ async def async_telegram_polling():
                         # =================================================
                         
                         html_img_match = re.search(r'<img src="(.*?)".*?>', raw_reply)
-                        md_img_match = re.search(r'!\[.*?\]\((.*?)\)', raw_reply)
+                        md_img_match = re.search(r'!\[.*?\]\((.*?\.jpg)\)', raw_reply)
                         
                         clean_text = re.sub(r'<img src=".*?".*?>', '', raw_reply)
-                        clean_text = re.sub(r'!\[.*?\]\(.*?\)', '', clean_text).strip()
+                        clean_text = re.sub(r'!\[.*?\]\(.*?\.jpg\)', '', clean_text).strip()
                         
                         final_html = clean_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                         
@@ -1250,7 +1250,6 @@ async def async_telegram_polling():
                         elif md_img_match:
                             img_url = md_img_match.group(1)
                             final_html += f'<a href="{img_url}">&#8205;</a>'
-
                         # 3. 发送
                         await asyncio.to_thread(_push_wechat, final_html, "") 
                         
