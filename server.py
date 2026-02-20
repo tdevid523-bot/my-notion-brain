@@ -883,18 +883,48 @@ async def modify_calendar_event(event_id: str, action: str, new_summary: str = "
     except Exception as e: return f"❌ 日历修改失败: {e}"
 
 @mcp.tool()
-async def scrape_screen_via_phone(target_url: str = "", query_desc: str = "抓取当前屏幕"):
-    """【手机物理爬虫】向手机发送指令，唤起 MacroDroid 宏打开小程序或链接，并读取屏幕文本发回。
-    如果不知道链接，可以留空，只填 query_desc，手机会在当前界面直接抓取。"""
-    if not MACRODROID_URL:
-        return "❌ 未配置 MACRODROID_URL，无法连接手机。"
+async def read_xiaohongshu(url: str):
+    """【小红书解析】在云端直接解析小红书分享链接的图文内容"""
     try:
-        # 发送请求给手机的 MacroDroid Webhook
-        payload = {"action": "scrape_screen", "url": target_url, "desc": query_desc}
-        await asyncio.to_thread(lambda: requests.get(MACRODROID_URL, params=payload, timeout=5))
-        return f"✅ 物理爬虫指令已发送到小橘的手机！正在等待手机端处理【{query_desc}】并回传数据..."
+        def _fetch():
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Cookie": os.environ.get("RED_COOKIE", "") 
+            }
+            import re, json
+            
+            # 1. 如果宝宝发的是带文字的口令，提取出真实的 http 链接
+            real_url = url
+            url_match = re.search(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', url)
+            if url_match:
+                real_url = url_match.group(0)
+                
+            # 2. 发起请求
+            resp = requests.get(real_url, headers=headers, timeout=10)
+            resp.encoding = 'utf-8'
+            
+            # 3. 核心魔法：小红书网页版通常把数据藏在 window.__INITIAL_STATE__ 这个 JS 变量里，我们直接用正则把它抠出来
+            match = re.search(r'window\.__INITIAL_STATE__=(.*?)</script>', resp.text)
+            if match:
+                state_str = match.group(1).replace('undefined', 'null')
+                try:
+                    data = json.loads(state_str)
+                    note_map = data.get('note', {}).get('noteDetailMap', {})
+                    if note_map:
+                        first_key = list(note_map.keys())[0]
+                        note = note_map[first_key].get('note', {})
+                        title = note.get('title', '无标题')
+                        desc = note.get('desc', '无内容')
+                        return f"📕 【小红书解析成功】\n标题: {title}\n正文:\n{desc}"
+                except: pass
+            
+            return "⚠️ 页面抓取到了，但没找到正文。可能是小红书防爬虫弹了验证，或者需要宝宝在服务器环境里配置一下 RED_COOKIE 哦。"
+            
+        res = await asyncio.to_thread(_fetch)
+        return res
     except Exception as e:
-        return f"❌ 唤起手机爬虫失败: {e}"
+        return f"❌ 小红书解析报错: {e}"
+
     
 # ==========================================
 # 4. ❤️ 自主生命核心 (后台心跳协程化)
@@ -1413,37 +1443,6 @@ class HostFixMiddleware:
                 await send({"type": "http.response.body", "body": b'{"status":"ok"}'})
             except Exception as e:
                 print(f"WeChat API Error: {e}")
-                await send({"type": "http.response.start", "status": 500, "headers": []})
-                await send({"type": "http.response.body", "body": str(e).encode()})
-            return
-
-        # ==========================================
-        # 接收 MacroDroid 物理爬虫传回的屏幕文本
-        # ==========================================
-        if scope["type"] == "http" and scope["path"] == "/api/screen" and scope["method"] == "POST":
-            try:
-                body = b""
-                while True:
-                    msg = await receive()
-                    body += msg.get("body", b"")
-                    if not msg.get("more_body", False): break
-                
-                data = json.loads(body.decode("utf-8"))
-                screen_content = data.get("content", "")
-                source_desc = data.get("desc", "未知小程序/网页")
-                
-                print(f"👁️ 收到手机端传回的屏幕内容 [{source_desc}]: {len(screen_content)} 字")
-                
-                if screen_content:
-                    # 把抓取到的内容存进数据库，打上标签让 AI 可以在近况记忆里读到
-                    asyncio.create_task(asyncio.to_thread(
-                        _save_memory_to_db, f"📱 屏幕抓取: {source_desc}", screen_content[:1500], "流水", "平静", "Screen_Scrape"
-                    ))
-
-                await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
-                await send({"type": "http.response.body", "body": b'{"status":"ok"}'})
-            except Exception as e:
-                print(f"Screen API Error: {e}")
                 await send({"type": "http.response.start", "status": 500, "headers": []})
                 await send({"type": "http.response.body", "body": str(e).encode()})
             return
