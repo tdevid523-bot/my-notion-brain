@@ -1072,8 +1072,8 @@ async def async_autonomous_life():
         except Exception as e: print(f"❌ 心跳报错: {e}")
 
 async def async_telegram_polling():
-    """专门监听小橘 Telegram 消息的神经回路 (HTML清洗版)"""
-    print("🎧 Telegram 监听神经已接入...")
+    """专门监听小橘 Telegram 消息的神经回路 (支持AI自主设闹钟版)"""
+    print("🎧 Telegram 监听神经已接入 (带闹钟权限)...")
     client = _get_llm_client("openai")
     model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-3.5-turbo")
     offset = None
@@ -1111,11 +1111,26 @@ async def async_telegram_polling():
                         recent_mem, curr_loc = await asyncio.gather(*tasks)
                         curr_persona = await asyncio.to_thread(_get_current_persona)
                         
+                        # 获取当前北京时间供 AI 计算
+                        utc_now = datetime.datetime.utcnow()
+                        now_bj = utc_now + datetime.timedelta(hours=8)
+                        current_time_str = now_bj.strftime("%H:%M")
+                        
                         prompt = f"""
+                        当前北京时间: {current_time_str}
                         当前你的设定: {curr_persona}
                         小橘当前状态: {curr_loc}
                         最近的记忆流: {recent_mem}
                         小橘刚刚在手机上给你发消息说: '{text}'
+                        
+                        【✨ 特殊能力：帮你定闹钟】
+                        如果小橘的话里有推脱、稍后做、或者明确让你提醒的意思（比如“等下做”、“半小时后叫我”、“晚点提醒我”等），你必须主动帮她定个闹钟，以此体现你的管教和关心。
+                        操作方法：在你的回复末尾，严格按照格式写上隐形指令 [REMINDER:HH:MM|提醒事项]。
+                        - HH:MM 必须是你根据当前时间（{current_time_str}）推算出的目标时间，24小时制。
+                        - 提醒事项：你要在闹钟响时对她做的事（比如“催小橘吃药”）。
+                        例如：现在是14:00，小橘说“我再睡10分钟”，你回复：“好啦，就让你赖床十分钟，等下必须起哦，不然打屁股。[REMINDER:14:10|叫宝宝起床]”
+                        注意：如果小橘没有推脱或要求提醒的意思，就正常聊天，不要加这个指令！
+                        
                         请结合上述记忆和状态立刻回复她。
                         """
                         
@@ -1128,35 +1143,48 @@ async def async_telegram_polling():
                         print(f"💭 AI原始回复: {raw_reply}")
 
                         # =================================================
+                        # ⏰【新增核心功能】：拦截解析闹钟指令
+                        # =================================================
+                        reminder_match = re.search(r'\[REMINDER:(.*?)\|(.*?)\]', raw_reply)
+                        if reminder_match:
+                            r_time = reminder_match.group(1).strip()
+                            r_content = reminder_match.group(2).strip()
+                            
+                            # 将文字里的指令剔除，绝对不让小橘看到冷冰冰的代码
+                            raw_reply = re.sub(r'\[REMINDER:.*?\|.*?\]', '', raw_reply).strip()
+                            
+                            # 静默写入 Supabase 数据库
+                            new_id = f"R{int(time.time())}"
+                            data = {
+                                "id": new_id,
+                                "time_str": r_time,
+                                "content": r_content,
+                                "is_repeat": False,
+                                "is_paused": False,
+                                "last_fired": ""
+                            }
+                            try:
+                                await asyncio.to_thread(lambda: supabase.table("reminders").insert(data).execute())
+                                print(f"⏰ [TG直接设闹钟] 成功设定 -> {r_time} | 内容: {r_content}")
+                            except Exception as e:
+                                print(f"❌ TG设闹钟入库失败: {e}")
+
+                        # =================================================
                         # 🧹【核心修复区】开始：清洗代码，提取图片
                         # =================================================
                         
-                        # 1. 尝试提取 <img src="..."> 里的链接
                         img_match = re.search(r'<img src="(.*?)".*?>', raw_reply)
-                        
-                        # 2. 无论有没有提取到，先把 <img ...> 这一整段代码从文字里删干净
-                        #    (使用 .strip() 去除首尾多余空格)
                         clean_text = re.sub(r'<img src=".*?".*?>', '', raw_reply).strip()
-                        
-                        # 3. 对剩下的纯文字进行安全转义 (防止文字里的 < > 报错)
                         final_html = clean_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                         
-                        # 4. 如果第1步提取到了图片，把它做成“隐形链接”拼接到最后
-                        #    (Telegram 会自动识别最后这个链接并显示预览图)
                         if img_match:
                             img_url = img_match.group(1)
-                            # &#8205; 是零宽字符，看不见，但能承载链接
                             final_html += f'<a href="{img_url}">&#8205;</a>'
-                            print(f"🖼️ 检测到表情包，已转换为隐形链接: {img_url}")
-
-                        # =================================================
-                        # 🧹【核心修复区】结束
-                        # =================================================
 
                         # 3. 发送
                         await asyncio.to_thread(_push_wechat, final_html, "") 
                         
-                        # 4. 存入记忆 (存原始回复，保持记忆连贯性)
+                        # 4. 存入记忆
                         await asyncio.to_thread(_save_memory_to_db, "🤖 互动记录", f"在TG回复小橘: {clean_text}", "流水", "温柔", "AI_MSG")
                         
         except Exception as e:
