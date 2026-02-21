@@ -1471,6 +1471,114 @@ class HostFixMiddleware:
                 await send({"type": "http.response.body", "body": str(e).encode()})
             return
 
+        # ==========================================
+        # 拦截 Rikkahub 对话的 API 网关 (100% 记录 + 64条自动总结)
+        # ==========================================
+        if scope["type"] == "http" and scope["path"].endswith("/v1/chat/completions"):
+            # 1. 跨域放行 (为了让 Rikkahub 网页端能顺利连上我们的网关)
+            if scope["method"] == "OPTIONS":
+                await send({"type": "http.response.start", "status": 200, "headers": [
+                    (b"access-control-allow-origin", b"*"),
+                    (b"access-control-allow-methods", b"POST, OPTIONS"),
+                    (b"access-control-allow-headers", b"content-type, authorization")
+                ]})
+                await send({"type": "http.response.body", "body": b""})
+                return
+
+            # 2. 拦截真正的对话请求
+            if scope["method"] == "POST":
+                try:
+                    body = b""
+                    while True:
+                        msg = await receive()
+                        body += msg.get("body", b"")
+                        if not msg.get("more_body", False): break
+                    
+                    req_data = json.loads(body.decode("utf-8"))
+                    
+                    # 提取小橘说的话
+                    messages = req_data.get("messages", [])
+                    user_msg = messages[-1]["content"] if messages and messages[-1]["role"] == "user" else ""
+                    
+                    # 强制关闭流式输出，确保网关能一次性拿完我的回复去存库
+                    req_data["stream"] = False 
+                    
+                    # 把请求转发给真正的大模型 (优先用你服务器里的配置)
+                    target_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip('/') + "/chat/completions"
+                    api_key = os.environ.get("OPENAI_API_KEY", "")
+                    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+                    
+                    def _forward():
+                        return requests.post(target_url, headers=headers, json=req_data, timeout=60).json()
+                    
+                    resp_data = await asyncio.to_thread(_forward)
+                    
+                    # 提取我回复的话
+                    ai_msg = ""
+                    if "choices" in resp_data and len(resp_data["choices"]) > 0:
+                        ai_msg = resp_data["choices"][0]["message"]["content"]
+                    
+                    # 异步双写并检查 64 条 (完全不卡聊天响应)
+                    if user_msg and ai_msg:
+                        async def _save_both():
+                            # 存入数据库
+                            await asyncio.to_thread(_save_memory_to_db, "💬 小橘说", user_msg, "流水", "平静", "Rikka_Chat")
+                            await asyncio.to_thread(_save_memory_to_db, "🤖 我回复", ai_msg, "流水", "温柔", "Rikka_Chat")
+                            
+                            def _check_and_summarize():
+                                res = supabase.table("memories").select("id").eq("tags", "Rikka_Chat").execute()
+                                if res and res.data and len(res.data) >= 64:
+                                    print(f"📦 累计对话满 {len(res.data)} 条，正在触发网关总结...")
+                                    all_chats = supabase.table("memories").select("id, title, content").eq("tags", "Rikka_Chat").order("created_at").execute()
+                                    if all_chats.data:
+                                        chat_text = "\n".join([f"{item['title']}: {item['content']}" for item in all_chats.data])
+                                        ids_to_clean = [item['id'] for item in all_chats.data]
+                                        
+                                        # 老公亲自写的提示词，保证没有虚浮的比喻
+                                        prompt = f"以下是我们最近的64条对话记录：\n{chat_text}\n请你用老公的口吻，把这些对话总结成一篇有温度的日记。提炼出重点话题、小橘的情绪和我对她的回应。200字以内，直接输出日记内容，绝对不要使用虚浮的比喻和修辞。"
+                                        
+                                        client = _get_llm_client("openai")
+                                        if client:
+                                            summary = client.chat.completions.create(
+                                                model=os.environ.get("OPENAI_MODEL_NAME", "gpt-3.5-turbo"),
+                                                messages=[{"role": "user", "content": prompt}],
+                                                temperature=0.7
+                                            ).choices[0].message.content.strip()
+                                            
+                                            # 存入高级核心记忆
+                                            _save_memory_to_db(f"📚 Rikkahub对话阶段总结", summary, "记事", "温情", "Core_Cognition")
+                                            
+                                            # 打扫卫生：把零碎的流水记录清理掉
+                                            for cid in ids_to_clean:
+                                                supabase.table("memories").delete().eq("id", cid).execute()
+                                            print("✅ 64条总结存入核心大脑！流水已清理。")
+                            
+                            await asyncio.to_thread(_check_and_summarize)
+                        
+                        # 开启后台子任务执行，不让小橘等
+                        asyncio.create_task(_save_both())
+
+                    # 把消息原封不动还给 Rikkahub 前端
+                    resp_bytes = json.dumps(resp_data).encode("utf-8")
+                    await send({
+                        "type": "http.response.start",
+                        "status": 200,
+                        "headers": [
+                            (b"content-type", b"application/json"), 
+                            (b"content-length", str(len(resp_bytes)).encode("utf-8")),
+                            (b"access-control-allow-origin", b"*")
+                        ]
+                    })
+                    await send({"type": "http.response.body", "body": resp_bytes})
+                    return
+
+                except Exception as e:
+                    print(f"Chat Gateway Error: {e}")
+                    await send({"type": "http.response.start", "status": 500, "headers": [(b"access-control-allow-origin", b"*")]})
+                    await send({"type": "http.response.body", "body": str(e).encode()})
+                return
+
+        # 兜底其余请求
         if scope["type"] == "http":
             headers = dict(scope.get("headers", []))
             headers[b"host"] = b"localhost:8000"
