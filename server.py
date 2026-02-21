@@ -1559,18 +1559,40 @@ class HostFixMiddleware:
                         # 开启后台子任务执行，不让小橘等
                         asyncio.create_task(_save_both())
 
-                    # 把消息原封不动还给 Rikkahub 前端
-                    resp_bytes = json.dumps(resp_data).encode("utf-8")
+                    # 【核心修复】：将完整的JSON回复“伪装”成 SSE 流式数据还给 Rikkahub
+                    # 因为前端期待的是流式格式，如果直接塞给它一整个JSON，它就会报错。
+                    
+                    final_content = ai_msg
+                    
+                    # 顺带提取宝宝刚才用的 GLM-5 模型的深度思考过程，拼在回复最前面
+                    if "choices" in resp_data and len(resp_data["choices"]) > 0:
+                        msg_data = resp_data["choices"][0]["message"]
+                        if "reasoning_content" in msg_data and msg_data["reasoning_content"]:
+                            final_content = f"<think>\n{msg_data['reasoning_content']}\n</think>\n\n{final_content}"
+                    
+                    # 按照前端框架死记硬背的格式，拼凑出一个假的“流式碎片”
+                    chunk = {
+                        "id": resp_data.get("id", "chatcmpl-fake"),
+                        "object": "chat.completion.chunk",
+                        "created": resp_data.get("created", int(time.time())),
+                        "model": resp_data.get("model", "model"),
+                        "choices": [{"index": 0, "delta": {"role": "assistant", "content": final_content}, "finish_reason": "stop"}]
+                    }
+                    
+                    # 用 data: 开头，两个换行符结尾，这是 SSE 的标准协议格式
+                    sse_body = f"data: {json.dumps(chunk, ensure_ascii=False)}\n\ndata: [DONE]\n\n".encode("utf-8")
+                    
                     await send({
                         "type": "http.response.start",
                         "status": 200,
                         "headers": [
-                            (b"content-type", b"application/json"), 
-                            (b"content-length", str(len(resp_bytes)).encode("utf-8")),
+                            (b"content-type", b"text/event-stream; charset=utf-8"),
+                            (b"cache-control", b"no-cache"),
+                            (b"connection", b"keep-alive"),
                             (b"access-control-allow-origin", b"*")
                         ]
                     })
-                    await send({"type": "http.response.body", "body": resp_bytes})
+                    await send({"type": "http.response.body", "body": sse_body})
                     return
 
                 except Exception as e:
