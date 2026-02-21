@@ -313,30 +313,22 @@ async def get_latest_diary(run_mode: str = "auto"):
     html_meme_repo = {k: f'<img src="{v}" {base_style} />' for k, v in RAW_MEME_REPO.items()}
 
     try:
-        # 1. 查询最新 2 条“记忆总结” (即深夜回溯产生的总结，通过 Core_Cognition 标签精准定位)
+        # 1. 查询最新 3 条“记忆总结” (代表前两日+今日产生的 Core_Cognition 核心回溯或Rikkahub总结)
         def _fetch_summaries():
-            return supabase.table("memories").select("*").eq("tags", "Core_Cognition").order("created_at", desc=True).limit(2).execute()
+            return supabase.table("memories").select("*").eq("tags", "Core_Cognition").order("created_at", desc=True).limit(3).execute()
             
-        # 2. 查询最新 4 条 TG 双向互动 (基于 tag 包含 TG_MSG 或 AI_MSG)
-        def _fetch_tg_msgs():
-            return supabase.table("memories").select("*").in_("tags", ["TG_MSG", "AI_MSG"]).order("created_at", desc=True).limit(4).execute()
-            
-        # 3. 核心分类分别提取最新 3 条
-        def _fetch_cat(cat_name):
-            return supabase.table("memories").select("*").eq("category", cat_name).order("created_at", desc=True).limit(3).execute()
-
+        # 2. 不再分类，直接暴力拉取最近的 64 条所有记忆 (刚好对齐总结阈值，包含所有未总结的对话)
+        def _fetch_recent_all():
+            return supabase.table("memories").select("*").order("created_at", desc=True).limit(64).execute()
         t_sum = asyncio.to_thread(_fetch_summaries)
-        t_tg = asyncio.to_thread(_fetch_tg_msgs)
-        t_cat1 = asyncio.to_thread(_fetch_cat, "记事")
-        t_cat2 = asyncio.to_thread(_fetch_cat, "灵感")
-        t_cat3 = asyncio.to_thread(_fetch_cat, "情感")
+        t_recent = asyncio.to_thread(_fetch_recent_all)
         t_silence = asyncio.to_thread(_get_silence_duration)
 
-        res_sum, res_tg, res_cat1, res_cat2, res_cat3, silence = await asyncio.gather(
-            t_sum, t_tg, t_cat1, t_cat2, t_cat3, t_silence
+        res_sum, res_recent, silence = await asyncio.gather(
+            t_sum, t_recent, t_silence
         )
 
-        # 使用字典按 id 去重合并
+        # 使用字典按 id 去重合并 (防止最近10条里恰好包含了刚生成的总结，自动去重)
         all_memories = {}
         def _merge(dataset):
             if dataset:
@@ -344,10 +336,7 @@ async def get_latest_diary(run_mode: str = "auto"):
                     all_memories[m['id']] = m
 
         _merge(res_sum.data)
-        _merge(res_tg.data)
-        _merge(res_cat1.data)
-        _merge(res_cat2.data)
-        _merge(res_cat3.data)
+        _merge(res_recent.data)
 
         # 按时间戳正序排列，确保上下文从旧到新连贯
         final_list = sorted(all_memories.values(), key=lambda x: x['created_at'])
