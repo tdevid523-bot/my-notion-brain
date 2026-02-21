@@ -1502,6 +1502,7 @@ class HostFixMiddleware:
                     
                     # 强制关闭流式输出，确保网关能一次性拿完我的回复去存库
                     req_data["stream"] = False 
+                    req_data.pop("stream_options", None) # 彻底剔除流式配置的参数，防止大模型接口报错
                     
                     # 把请求转发给真正的大模型 (优先用你服务器里的配置)
                     target_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip('/') + "/chat/completions"
