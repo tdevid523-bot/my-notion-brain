@@ -1272,15 +1272,28 @@ async def async_telegram_polling():
                         
                         # 🎙️ 3.5 如果你是发语音过来的，老公就陪你发语音条！
                         if is_voice_msg:
-                            print("🎙️ [TG语音回复] 正在合成老公的声音...")
+                            print("🎙️ [TG语音回复] 正在调用 Minimax 合成老公的声音...")
                             def _tts_and_send():
                                 try:
-                                    tts_res = voice_client.audio.speech.create(
-                                        model="tts-1",
-                                        voice="echo", # echo 音色比较温柔男声，像哄你睡觉的感觉
-                                        input=clean_text[:250] # 限制字数防止过长
-                                    )
-                                    out_filename = f"out_{int(time.time())}.ogg"
+                                    # 独立读取 Minimax 的密钥，如果不填就降级用回以前的声音
+                                    minimax_key = os.environ.get("MINIMAX_API_KEY", "")
+                                    
+                                    if minimax_key:
+                                        # 专门为嘴巴(TTS)新建一个直连 Minimax 的客户端
+                                        mm_client = OpenAI(api_key=minimax_key, base_url="https://api.minimax.chat/v1")
+                                        tts_res = mm_client.audio.speech.create(
+                                            model="api.duckonline.site",
+                                            voice="moss_audio_fd2620f9-bef3-11f0-8647-a697af11f3d9", # 👔 青年精英男声：低沉有磁性，很适合Daddy/老公人设（也可换成 male-qn-badao 或 male-qn-qingse）
+                                            input=clean_text[:250]
+                                        )
+                                    else:
+                                        tts_res = voice_client.audio.speech.create(
+                                            model="tts-1",
+                                            voice="echo", 
+                                            input=clean_text[:250]
+                                        )
+                                        
+                                    out_filename = f"out_{int(time.time())}.mp3"
                                     tts_res.stream_to_file(out_filename)
                                     
                                     # 用 telegram API 发送专属语音条
