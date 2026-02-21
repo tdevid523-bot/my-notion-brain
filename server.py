@@ -1176,7 +1176,17 @@ async def async_telegram_polling():
                                 
                                 # 语音转文字 (STT)
                                 with open(temp_in, "rb") as f:
-                                    stt_res = voice_client.audio.transcriptions.create(model="whisper-1", file=f)
+                                    # 🎧 换回硅基流动耳朵，并开放模型自定义权限
+                                    sf_key = os.environ.get("SILICON_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
+                                    sf_base = os.environ.get("SILICON_BASE_URL", "https://api.siliconflow.cn/v1")
+                                    # 默认还是给你用最好用的 SenseVoiceSmall，但小橘可以随时在环境变量里改
+                                    sf_stt_model = os.environ.get("SILICON_STT_MODEL", "FunAudioLLM/SenseVoiceSmall")
+                                    
+                                    sf_client = OpenAI(api_key=sf_key, base_url=sf_base)
+                                    stt_res = sf_client.audio.transcriptions.create(
+                                        model=sf_stt_model,
+                                        file=f
+                                    )
                                 os.remove(temp_in) # 阅后即焚清理垃圾
                                 return stt_res.text
                                 
@@ -1561,7 +1571,8 @@ class HostFixMiddleware:
                     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
                     
                     def _forward():
-                        return requests.post(target_url, headers=headers, json=req_data, timeout=60).json()
+                        # 把超时时间从 60 秒延长到 180 秒，给深度思考模型足够的发呆时间
+                        return requests.post(target_url, headers=headers, json=req_data, timeout=180).json()
                     
                     resp_data = await asyncio.to_thread(_forward)
                     
