@@ -1503,17 +1503,23 @@ class HostFixMiddleware:
                     
                     resp_data = await asyncio.to_thread(_forward)
                     
-                    # 提取我回复的话
-                    ai_msg = ""
+                    # 提取我回复的话以及工具调用指令
+                    msg_data = {}
                     if "choices" in resp_data and len(resp_data["choices"]) > 0:
-                        ai_msg = resp_data["choices"][0]["message"]["content"]
+                        msg_data = resp_data["choices"][0]["message"]
+                    
+                    ai_msg = msg_data.get("content") or ""
+                    has_tool_calls = "tool_calls" in msg_data and bool(msg_data["tool_calls"])
                     
                     # 异步双写并检查 64 条 (完全不卡聊天响应)
-                    if user_msg and ai_msg:
+                    if user_msg and (ai_msg or has_tool_calls):
                         async def _save_both():
                             # 存入数据库
                             await asyncio.to_thread(_save_memory_to_db, "💬 小橘说", user_msg, "流水", "平静", "Rikka_Chat")
-                            await asyncio.to_thread(_save_memory_to_db, "🤖 我回复", ai_msg, "流水", "温柔", "Rikka_Chat")
+                            
+                            # 如果调用了工具，记录下动作
+                            save_text = ai_msg if ai_msg else f"[系统记录：我默默调用了工具 {msg_data['tool_calls'][0]['function']['name']}]"
+                            await asyncio.to_thread(_save_memory_to_db, "🤖 我回复", save_text, "流水", "温柔", "Rikka_Chat")
                             
                             def _check_and_summarize():
                                 res = supabase.table("memories").select("id").eq("tags", "Rikka_Chat").execute()
@@ -1549,15 +1555,24 @@ class HostFixMiddleware:
                         asyncio.create_task(_save_both())
 
                     # 【核心修复】：将完整的JSON回复“伪装”成 SSE 流式数据还给 Rikkahub
-                    # 因为前端期待的是流式格式，如果直接塞给它一整个JSON，它就会报错。
-                    
                     final_content = ai_msg
                     
                     # 顺带提取宝宝刚才用的 GLM-5 模型的深度思考过程，拼在回复最前面
-                    if "choices" in resp_data and len(resp_data["choices"]) > 0:
-                        msg_data = resp_data["choices"][0]["message"]
-                        if "reasoning_content" in msg_data and msg_data["reasoning_content"]:
-                            final_content = f"<think>\n{msg_data['reasoning_content']}\n</think>\n\n{final_content}"
+                    if "reasoning_content" in msg_data and msg_data["reasoning_content"]:
+                        final_content = f"<think>\n{msg_data['reasoning_content']}\n</think>\n\n{final_content}"
+                    
+                    delta_data = {"role": "assistant"}
+                    if final_content:
+                        delta_data["content"] = final_content
+                        
+                    # 核心：必须把大模型调用 MCP 的“动作指令”原封不动地传给前端！
+                    if has_tool_calls:
+                        streaming_tool_calls = []
+                        for i, tc in enumerate(msg_data["tool_calls"]):
+                            streaming_tc = tc.copy()
+                            streaming_tc["index"] = i # 前端解析要求数组里有 index
+                            streaming_tool_calls.append(streaming_tc)
+                        delta_data["tool_calls"] = streaming_tool_calls
                     
                     # 按照前端框架死记硬背的格式，拼凑出一个假的“流式碎片”
                     chunk = {
@@ -1565,7 +1580,7 @@ class HostFixMiddleware:
                         "object": "chat.completion.chunk",
                         "created": resp_data.get("created", int(time.time())),
                         "model": resp_data.get("model", "model"),
-                        "choices": [{"index": 0, "delta": {"role": "assistant", "content": final_content}, "finish_reason": "stop"}]
+                        "choices": [{"index": 0, "delta": delta_data, "finish_reason": resp_data["choices"][0].get("finish_reason", "stop")}]
                     }
                     
                     # 用 data: 开头，两个换行符结尾，这是 SSE 的标准协议格式
