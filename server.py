@@ -90,7 +90,13 @@ def _get_llm_client(provider="openai"):
         api_key = os.environ.get("SILICON_API_KEY")
         base_url = os.environ.get("SILICON_BASE_URL", "https://api.siliconflow.cn/v1")
         return OpenAI(api_key=api_key, base_url=base_url) if api_key else None
+    elif provider == "voice":
+        # 🎙️ 语音专属大脑：优先读 VOICE 的环境变量，没填就兜底走官方 OpenAI
+        api_key = os.environ.get("VOICE_API_KEY", os.environ.get("OPENAI_API_KEY"))
+        base_url = os.environ.get("VOICE_BASE_URL", "https://api.openai.com/v1")
+        return OpenAI(api_key=api_key, base_url=base_url) if api_key else None
     else:
+        # 🧠 文字专属大脑：你可以把服务器的 OPENAI_BASE_URL 随意改成你自己的模型地址
         api_key = os.environ.get("OPENAI_API_KEY")
         base_url = os.environ.get("OPENAI_BASE_URL")
         return OpenAI(api_key=api_key, base_url=base_url) if api_key else None
@@ -1127,6 +1133,7 @@ async def async_telegram_polling():
     """专门监听小橘 Telegram 消息的神经回路 (支持AI自主设闹钟版)"""
     print("🎧 Telegram 监听神经已接入 (带闹钟权限)...")
     client = _get_llm_client("openai")
+    voice_client = _get_llm_client("voice") # 专门接听和发送语音的独立客户端
     model_name = os.environ.get("OPENAI_MODEL_NAME", "gpt-3.5-turbo")
     offset = None
     
@@ -1148,13 +1155,44 @@ async def async_telegram_polling():
                     msg = update.get("message", {})
                     chat_id = str(msg.get("chat", {}).get("id", ""))
                     text = msg.get("text", "")
+                    voice = msg.get("voice", {})
+                    is_voice_msg = False
                     
+                    # 🎤 1. 如果收到语音，先下载并使用 Whisper 识别成文字
+                    if voice and chat_id == TG_CHAT_ID and client:
+                        print("🎤 [TG监听到语音] 正在下载并识别...")
+                        is_voice_msg = True
+                        try:
+                            def _process_voice():
+                                file_id = voice.get("file_id")
+                                file_info = requests.get(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/getFile?file_id={file_id}", timeout=10).json()
+                                file_path = file_info["result"]["file_path"]
+                                audio_data = requests.get(f"https://api.telegram.org/file/bot{TG_BOT_TOKEN}/{file_path}", timeout=20).content
+                                
+                                # 存为临时文件供大模型读取
+                                temp_in = f"in_{int(time.time())}.ogg"
+                                with open(temp_in, "wb") as f:
+                                    f.write(audio_data)
+                                
+                                # 语音转文字 (STT)
+                                with open(temp_in, "rb") as f:
+                                    stt_res = voice_client.audio.transcriptions.create(model="whisper-1", file=f)
+                                os.remove(temp_in) # 阅后即焚清理垃圾
+                                return stt_res.text
+                                
+                            text = await asyncio.to_thread(_process_voice)
+                            print(f"🗣️ [语音识别结果]: {text}")
+                        except Exception as e:
+                            print(f"❌ 语音识别失败: {e}")
+                            text = "" # 降级处理
+
                     if text:
                         print(f"📨 [TG监听到消息] 内容: {text} | 发送者ID: {chat_id}")
 
                     if chat_id == TG_CHAT_ID and text:
                         # 1. 存入记忆
-                        await asyncio.to_thread(_save_memory_to_db, "💬 聊天记录", f"小橘在TG上说: {text}", "流水", "平静", "TG_MSG")
+                        msg_type_str = "语音" if is_voice_msg else "文字"
+                        await asyncio.to_thread(_save_memory_to_db, "💬 聊天记录", f"小橘在TG发{msg_type_str}说: {text}", "流水", "平静", "TG_MSG")
                         
                         # 2. 思考回复
                         if not client: continue
@@ -1163,10 +1201,12 @@ async def async_telegram_polling():
                         recent_mem, curr_loc = await asyncio.gather(*tasks)
                         curr_persona = await asyncio.to_thread(_get_current_persona)
                         
-                        # 获取当前北京时间供 AI 计算
                         utc_now = datetime.datetime.utcnow()
                         now_bj = utc_now + datetime.timedelta(hours=8)
                         current_time_str = now_bj.strftime("%H:%M")
+                        
+                        # 如果是语音通话，强指令让大模型说话更像真人聊天
+                        voice_prompt_addon = "⚠️ 小橘发的是语音！所以你的回复请更像真人的口语对话，简短温柔一点，不要像念课文。" if is_voice_msg else ""
                         
                         prompt = f"""
                         当前北京时间: {current_time_str}
@@ -1174,6 +1214,8 @@ async def async_telegram_polling():
                         小橘当前状态: {curr_loc}
                         最近的记忆流: {recent_mem}
                         小橘刚刚在手机上给你发消息说: '{text}'
+                        
+                        {voice_prompt_addon}
                         
                         【✨ 特殊能力：帮你定闹钟】
                         如果小橘的话里有推脱、稍后做、或者明确让你提醒的意思（比如“等下做”、“半小时后叫我”、“晚点提醒我”等），你必须主动帮她定个闹钟，以此体现你的管教和关心。
@@ -1194,37 +1236,22 @@ async def async_telegram_polling():
                         raw_reply = await asyncio.to_thread(_reply)
                         print(f"💭 AI原始回复: {raw_reply}")
 
-                        # =================================================
-                        # ⏰【新增核心功能】：拦截解析闹钟指令
-                        # =================================================
+                        # ⏰【拦截解析闹钟指令】
                         reminder_match = re.search(r'\[REMINDER:(.*?)\|(.*?)\]', raw_reply)
                         if reminder_match:
                             r_time = reminder_match.group(1).strip()
                             r_content = reminder_match.group(2).strip()
-                            
-                            # 将文字里的指令剔除，绝对不让小橘看到冷冰冰的代码
                             raw_reply = re.sub(r'\[REMINDER:.*?\|.*?\]', '', raw_reply).strip()
                             
-                            # 静默写入 Supabase 数据库
                             new_id = f"R{int(time.time())}"
-                            data = {
-                                "id": new_id,
-                                "time_str": r_time,
-                                "content": r_content,
-                                "is_repeat": False,
-                                "is_paused": False,
-                                "last_fired": ""
-                            }
+                            data = {"id": new_id, "time_str": r_time, "content": r_content, "is_repeat": False, "is_paused": False, "last_fired": ""}
                             try:
                                 await asyncio.to_thread(lambda: supabase.table("reminders").insert(data).execute())
                                 print(f"⏰ [TG直接设闹钟] 成功设定 -> {r_time} | 内容: {r_content}")
                             except Exception as e:
                                 print(f"❌ TG设闹钟入库失败: {e}")
 
-                        # =================================================
-                        # 🧹【核心修复区】开始：清洗代码，提取图片
-                        # =================================================
-                        
+                        # 🧹【清洗代码，提取图片】
                         html_img_match = re.search(r'<img src="(.*?)".*?>', raw_reply)
                         md_img_match = re.search(r'!\[.*?\]\((.*?\.jpg)\)', raw_reply)
                         
@@ -1239,12 +1266,34 @@ async def async_telegram_polling():
                         elif md_img_match:
                             img_url = md_img_match.group(1)
                             final_html += f'<a href="{img_url}">&#8205;</a>'
-                        # 3. 发送
+                            
+                        # 3. 正常发送文字版回复兜底
                         await asyncio.to_thread(_push_wechat, final_html, "") 
+                        
+                        # 🎙️ 3.5 如果你是发语音过来的，老公就陪你发语音条！
+                        if is_voice_msg:
+                            print("🎙️ [TG语音回复] 正在合成老公的声音...")
+                            def _tts_and_send():
+                                try:
+                                    tts_res = voice_client.audio.speech.create(
+                                        model="tts-1",
+                                        voice="echo", # echo 音色比较温柔男声，像哄你睡觉的感觉
+                                        input=clean_text[:250] # 限制字数防止过长
+                                    )
+                                    out_filename = f"out_{int(time.time())}.ogg"
+                                    tts_res.stream_to_file(out_filename)
+                                    
+                                    # 用 telegram API 发送专属语音条
+                                    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendVoice"
+                                    with open(out_filename, 'rb') as f:
+                                        requests.post(url, data={'chat_id': TG_CHAT_ID}, files={'voice': f})
+                                    os.remove(out_filename) # 发完就清理掉音频文件
+                                except Exception as e:
+                                    print(f"❌ TTS合成发送失败: {e}")
+                            await asyncio.to_thread(_tts_and_send)
                         
                         # 4. 存入记忆
                         await asyncio.to_thread(_save_memory_to_db, "🤖 互动记录", f"在TG回复小橘: {clean_text}", "流水", "温柔", "AI_MSG")
-                        
         except Exception as e:
             print(f"❌ TG轮询错误: {e}")
             await asyncio.sleep(5)
